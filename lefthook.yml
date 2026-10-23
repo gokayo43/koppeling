@@ -1,42 +1,30 @@
-# Install/refresh with: bun run prepare
+# Install/refresh with: bun run hooks
 #
-# pre-commit stays fast and staged-only; the whole-project checks (typecheck,
-# knip, tests) live on pre-push so a green push is a green CI run.
+# Staged files only, on commit: the whole-project checks run once, in CI, on the
+# state that lands.
 
 pre-commit:
   parallel: true
   commands:
     format:
-      glob: "*.{js,jsx,ts,tsx,json,css,md}"
+      glob: "*.{js,ts,json,md}"
+      # dist/ is a committed build artifact that oxfmt ignores, and oxfmt EXITS
+      # NON-ZERO when every file it was handed was excluded, so the commit that
+      # carries a rebuilt dist/ and nothing else would be refused.
+      exclude:
+        - "dist/**"
       run: bunx oxfmt --check {staged_files}
     lint:
-      glob: "*.{js,jsx,ts,tsx}"
+      glob: "*.{js,ts}"
+      exclude:
+        - "dist/**"
       # The same flag the `lint` script and CI carry: a directive that no longer
-      # suppresses anything is an error there, so it has to be one here too —
-      # otherwise a green push is not a green CI run.
+      # suppresses anything is an error there, so it has to be one here too.
       run: bunx oxlint --report-unused-disable-directives-severity=error {staged_files}
     secrets:
-      # --staged scans the index, not the working tree: every one of these repos
-      # keeps a real gitignored .env beside the code, and a working-tree scan
-      # would fail every commit over secrets that were never going anywhere.
+      # --staged scans the index rather than the working tree, so a commit is
+      # judged by what it actually contains.
       run: gitleaks git --staged --redact --no-banner .
-
-# The template tree deliberately declares no dependencies (setup.ts resolves
-# versions at scaffold time), so an app typecheck or test run can never pass
-# here. Pre-push runs this repo's own gate — the same lane template.yml runs.
-# The hook a scaffolded repo lives under is setup/root/lefthook.yml, which the
-# scaffolder installs over this file.
-pre-push:
-  parallel: true
-  commands:
-    scaffolder-types:
-      run: bunx tsc -p tsconfig.setup.json
-    scaffolder-lint:
-      run: bunx oxlint --report-unused-disable-directives-severity=error setup.ts setup/dependencies.ts
-    scaffolder-tests:
-      run: bun test ./setup.test.ts
-    format:
-      run: bunx oxfmt --check . '!**/*.md'
 
 commit-msg:
   commands:

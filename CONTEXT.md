@@ -1,16 +1,28 @@
 # Glossary
 
-The words this product's domain is written in. One entry per term, defined by
-what it means to the business — never by how it is stored, validated or
-rendered. If an entry needs a file path or a type name to make sense, it belongs
-in the code, not here.
+The words this package is written in. One entry per term, defined by what it
+means to the people who use a koppeling, never by how it is built.
 
-Rename here first: a term that changes meaning changes it in this file, then in
-the code, in the same change.
+**Koppeling**: the door through which a program outside our systems, such as
+Claude or another agent, reads and acts in one of them on behalf of a signed-in
+office person. The program acts as that person, and what it does is recorded as
+that person's.
 
-## Identity
+**Koppelingsinlog**: the one-time sign-in and consent a person gives a program
+in the browser: they sign in with their portal account and allow the program
+once. A second connection of the same program by the same person asks nothing,
+until the person disconnects the program in their board profile.
 
-**Account** — <who a person is to this product, independent of how they prove
-it. Delete this example and write the real vocabulary.>
+**Koppelingstoken**: a personal token a person creates in their board profile
+for a program that cannot sign in through a browser, such as an agent on a
+server. It acts as that person until they revoke it.
 
-**Session** — <a proven, time-limited claim to act as an Account.>
+**Operatie** (operation): one callable thing a program declares: a tRPC
+procedure, or an Elysia route. A read operation changes nothing; a write
+operation changes data, and the person is asked before it runs.
+
+**Gebied** (area): the part of a program an operation belongs to: a router's
+top-level key, or a route path's first segment.
+
+**Catalogus** (catalogue): the list of a program's operations, as the program
+itself declares them when it starts.

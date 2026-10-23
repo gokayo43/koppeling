@@ -1,210 +1,167 @@
-# project-template
+# koppeling
 
-<!-- scaffold:template -->
+A program's own declared operations, offered over MCP to the signed-in office
+person's agent, as that person. The catalogue is derived from the program at
+boot: a tRPC v11 router's queries and mutations, or an Elysia 1.4 app's routes.
+A procedure or route added, changed or removed is offered, changed or gone the
+next time the program boots, with nothing else to keep up.
 
-A production-shaped starting point for the stack in `~/claude-shared/STACK.md`.
-Create a repo from this template, then:
+## Install
 
-```sh
-bun run setup
+A host installs the repository by commit; `dist/` is committed, so nothing is
+built at the host.
+
+```json
+"koppeling": "git+ssh://git@github.com/gokayo43/koppeling.git#<sha>"
 ```
 
-It asks for a name, a hostname and a shape — a single TanStack Start app, or Bun
-workspaces with a standalone Elysia/Effect API and an optional worker — resolves
-every dependency at today's versions under the seven-day release-age policy,
-installs the git hooks, generates the first migration, installs the workflows
-under `setup/` as the new repo's CI, reconciles the repo's labels to the two it
-uses, and then deletes itself. What is left reads as a repo somebody
-wrote by hand.
+`@modelcontextprotocol/server`, `effect` and `jose` come with it. `@trpc/server`
+(`^11`), `elysia` (`^1.4`), `zod` (`^4`) and `@sinclair/typebox` (`^0.34`) are
+optional peers: the host already has the ones its program is written in.
 
-This repo's own CI is `.github/workflows/template.yml`: it scaffolds both shapes
-and runs the scaffolded gate against each. It is what proves the scaffolder, and
-it does not ship.
+## The interface
 
-Everything below this line is the README the scaffolded project keeps.
+This is the whole of it.
 
----
+```ts
+import { fromElysia, fromTrpcRouter, koppeling } from "koppeling";
 
-<!-- scaffold:template -->
+// A tRPC v11 router: every query and mutation, named by its path.
+const catalogue = fromTrpcRouter(appRouter, {
+  contextFor: (actor) => ({ session: { user: actor } }), // the context the UI's requests get
+});
 
-<One line: what this is.>
+// Or an Elysia 1.4 app: every route under `mount`, named by its path and method.
+const catalogue = fromElysia(app, {
+  credential: (actor) => ({ authorization: `Bearer ${actor.apiKey}` }), // headers the app's own auth accepts
+  mount: "/api/v1", // optional; the whole app when absent
+});
 
-## Getting started
+const door = koppeling({
+  catalogue,
+  glossary: "Magazijn. Woorden: ...", // the server's instructions open with it
+  resource: {
+    url: "https://wms.example/api/mcp", // this door's public URL; every token's `aud`
+    scopes: ["koppeling"],
+  },
+  identity: {
+    issuer: "https://portal.example", // every token's `iss`
+    jwksUrl: "http://portal.lan/api/auth/jwks", // optional; `<issuer>/.well-known/jwks.json` when absent
+    authorizationServer: "https://portal.example",
+  },
+  actorFor: async (claims) => ({ actor: await personFor(claims.sub) }), // or { refusal: "Dutch sentence" }
+});
+
+door.handle(request); // Promise<Response>: the MCP endpoint, mounted at resource.url
+door.metadata(request); // Response: the protected resource metadata document
+door.report; // { areas: { [area]: count }, skipped: Note[], undescribed: Note[] }
+```
+
+Mount `door.handle` at `resource.url` (it answers a POST, and 405 to any other
+method, since it keeps no session), and `door.metadata` at the URL a 401 names, which is
+`resource.url` with `/.well-known/oauth-protected-resource` put before its path
+(RFC 9728): `https://wms.example/.well-known/oauth-protected-resource/api/mcp`.
+
+The types: `Catalogue<Actor>`, `Operation<Actor>`, `Kind` (`"read" | "write"`),
+`Outcome`, `Note` (`{ name, reason }`), `ActorDecision<Actor>`, `Identity`,
+`KoppelingOptions<Actor>`, `Koppeling`, `BootReport`, `ElysiaOptions<Actor>`,
+`TrpcOptions<Router, Actor>`, `Json`, `JsonObject`, `JsonSchema`.
+
+## What an agent sees
+
+Four tools, always these, in this order:
+
+| Tool       | Takes            | Answers                                                                                                                                                 |
+| ---------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`     | `area?`          | No area: every area with its line and operation count. An exact area: its operations with name, kind and line.                                          |
+| `find`     | `words`          | Up to ten operations whose name, area, description and input field names best meet the words (at most 200 characters, 20 distinct words). Runs nothing. |
+| `describe` | `name`           | The whole operation: kind, description, side-effect line, input schema, output schema.                                                                  |
+| `call`     | `name`, `input?` | Runs the operation once as the person; its value as text and as `structuredContent: { result }`.                                                        |
+
+`list`, `find` and `describe` are annotated read-only; `call` is destructive,
+and its description tells the agent that a `write` operation changes data and
+that it asks the person first. The server's instructions are the host's
+glossary followed by an outline of every area with its count and the names of
+its first ten operations.
+
+A name or area that is not exactly one the door has is refused with the list
+to pick from: the areas, or the operations of the area the name starts with.
+Nothing ever resolves a near miss on its own.
+
+### Where an operation's words come from
+
+- tRPC: the name is the path (`orders.updatePicking`), the area its first key,
+  `kind` is `read` for a query and `write` for a mutation, the description is
+  `meta.description`, the input is the `.input()` parsers' JSON Schema (`allOf`
+  when there are several), the output is `.output()`'s.
+- Elysia: the name is the path's segments under the mount, a `:param` by its
+  name, then the method (`vehicles.lookup.get`,
+  `vehicles.lookup.lookup_id.selection.post`); `kind` is `read` for GET and
+  HEAD; the description is `detail.summary` then `detail.description`; the
+  input is `{ params, query, body }`, each as the route (and any guard)
+  declares it, a model named by string resolved from the app's models; the
+  output is the `response` map's 200 entry.
+- The first line of a description is the operation's line in `list` and
+  `find`. A line that starts with `Gevolg:` is its side-effect line, which
+  `describe` answers as `sideEffect`.
+- Schemas are converted from Effect Schema (`JSONSchema.make`, the encoded
+  side; an input whose encoded side is `X | undefined` is described as `X` and
+  may be left out), TypeBox (as it is) and Standard JSON Schema (zod 4). A
+  schema in any other language fails the boot, naming the operation. A schema
+  its own language cannot write as JSON Schema (an Effect `DateFromSelf`, a
+  zod `z.date()`) is described as such, the operation is still offered, and
+  the boot report names it under `undescribed`.
+
+### What `call` answers
+
+- The program's value, as JSON: a `bigint` as its decimal string, a `Map` as an
+  object, a `Set` as an array, anything with `toJSON` (a `Date`, a decimal) as
+  that.
+- A refusal the program states is a tool error carrying the program's own
+  sentence: for tRPC every `TRPCError` but `INTERNAL_SERVER_ERROR` (its input
+  parser's message included), for Elysia every 4xx, as `HTTP <status>: <body>`.
+- A failure the program did not mean to show (for tRPC an
+  `INTERNAL_SERVER_ERROR`, which is what tRPC wraps an unexpected throw in; for
+  Elysia any 5xx) is logged with the operation's name and answered with the
+  door's own sentence, so a stack or a database's words never reach the person.
+- The operation runs at most once per `call`. The door retries nothing.
+
+## Sign-in
+
+Every request carries a bearer JWT from the identity provider (the portal). The
+door verifies its signature against the provider's key set, cached and fetched
+again for a key id it has not seen (no more often than every 30 seconds, jose's
+cool-down), and checks `iss` against `identity.issuer`, `aud` against
+`resource.url`, `exp` and `nbf`. Only then does it ask `actorFor(claims)`.
+
+| Request                                  | Answer                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| No bearer                                | 401, `WWW-Authenticate: Bearer resource_metadata="<metadata url>"` |
+| A bearer that does not verify            | 401, the same header with `error="invalid_token"`                  |
+| The provider's key set cannot be fetched | 503                                                                |
+| `actorFor` answers `{ refusal }`         | 403, `{ "error": "<refusal>" }`                                    |
+| `actorFor` throws or rejects             | 503, the door's own sentence; the error is logged                  |
+
+The metadata document names the resource, the authorization server, the
+scopes and `bearer_methods_supported: ["header"]`. The door checks no scope
+itself: `actorFor` receives the claims, `scope` among them, and decides.
+
+## Protocol
+
+`@modelcontextprotocol/server` 2.3.1, the SDK's stable v2 line. A 2026-07-28
+request (`server/discover`, per-request `_meta`) goes to the SDK's per-request
+handler; a 2025-era request (`initialize`, protocol 2025-11-25 back to
+2024-10-07) is served stateless over `WebStandardStreamableHTTPServerTransport`
+with `enableJsonResponse`, the shape Claude Desktop already uses with the
+portal's door.
+
+## Developing
 
 ```sh
 bun install
-cp .env.example .env      # fill the password, the secret, and DATABASE_URL
-bun run dev
+bun run hooks   # the git hooks
+bun run check   # format, lint, typecheck, knip
+bun test
+bun run build   # rewrites dist/, which is committed
+bun run walk    # how the fixture programs meet the phrasings in tests/fixtures/phrasings.txt
 ```
-
-`bun run check && bun test` is the local gate. CI runs it and then does what a
-developer machine cannot: replays the migrations onto an empty Postgres, boots
-the program that owns the database against the result, and ramps every route it
-serves.
-<!-- scaffold:single -->
-It also mutates the domain files a branch changed, and fails on a mutant that
-branch's own lines left undetected.
-<!-- scaffold:single -->
-`CLAUDE.md` documents the layout, the deploy, going live, and the framework
-behaviour that costs a probe to rediscover.
-
-## Worktrees and preview
-
-`bun run dev` and `db:migrate` inside a linked git worktree derive their own
-database and ports, and say so — after a `bun install`, which is all a new
-worktree needs. They read the primary checkout's `.env` and never write to it;
-the primary checkout is unchanged. Nothing else needs the derived world, so the
-suite runs in a worktree with no Docker at all. `bun run worktree:clean` drops
-the databases whose branch is gone.
-
-`scripts/preview.sh` boots the real images on their own ports against their own
-database — `--restore --key <age identity>` sources it from the latest backup,
-which doubles as the restore drill. `scripts/preview-down.sh` removes it,
-volumes included.
-
-`scripts/preview-capacity.sh` ramps that stack and writes the number to
-`capacity/`. It is the capacity measurement, as opposed to CI's: the images that
-would ship, on the box that would run them. Take it before real users arrive and
-again after a change to a hot path.
-
-## Secrets
-
-`.env` is gitignored and never leaves the box it runs on. `.env.example` is its
-shape, checked in. `.env.enc` is the same file [age](https://age-encryption.org)-encrypted
-to the owner's public key and **committed** — so the real configuration is
-versioned alongside the code and survives losing the box, while the box itself
-holds only what it needs to run.
-
-```sh
-# after editing .env
-age --encrypt --recipient "$BACKUP_AGE_RECIPIENT" --armor -o .env.enc .env
-
-# on a fresh box, with the private key available
-age --decrypt --identity ~/.config/age/backup.key -o .env .env.enc
-```
-
-Generate the keypair once, off this machine: `age-keygen -o backup.key` writes the
-private half and prints the public one. Both halves end up on the box — see
-"Backups" below for why, and for what that does and does not buy.
-
-`deploy.env` is not one of these: it holds the public origins a deployment
-answers at, it is committed, and it is the only file the containers read them
-from. A checkout's `.env` holds its own — see CLAUDE.md, "Deploy".
-
-## Backups
-
-`scripts/backup.sh` dumps Postgres, gzips, age-encrypts to that same public key
-and uploads to Cloudflare R2 — one pipeline, so plaintext never touches the disk.
-
-**What the encryption is and is not for.** The box holds the PRIVATE key too, at
-`~/.config/age/backup.key`, mode `600` — the weekly restore drill below runs
-unattended and cannot decrypt without it. So root on this host can read every
-backup ever taken: encryption does not defend against a compromise of the
-machine the data is already on. What it does defend against is everywhere the
-archives go afterwards — R2 holds ciphertext, and whoever gets that bucket or
-those credentials gets nothing. The owner's offline copy of the key is the other
-half: it is what makes the archives readable after this box is gone, which is
-the case backups exist for.
-
-`scripts/restore-drill.sh` is what makes any of that a backup rather than a
-hope. It pulls the newest archive under this stack's own prefix in the bucket
-(or takes `--archive`), decrypts it with the private key `BACKUP_AGE_KEY` names,
-restores into a throwaway database, fails if the result has implausibly few
-tables, and drops the copy again once it has passed.
-
-The prefix and the age bound are the two halves of "the right archive". A bucket
-holds more than one stack's backups, so the drill reads only what
-`scripts/backup.sh` wrote under `project-template/`; and an archive older than
-`BACKUP_MAX_AGE_HOURS` (36 — nightly, plus a night's slack) fails the drill
-outright, because a month-old dump restores perfectly and says nothing about the
-nights nothing was written.
-
-```sh
-scripts/restore-drill.sh --dry-run   # decide everything, touch nothing
-scripts/restore-drill.sh             # the real drill
-```
-
-The timer runs it as `--scratch-project project-template-drill`: a stack the
-drill owns, brought up if it is down and taken down with `down -v` the moment
-the drill passes. So a full copy of production is restored every week, in a
-container and on a volume of its own rather than inside production's Postgres,
-and none of it is anywhere afterwards. `--project` is the other answer, the one
-`scripts/preview.sh` uses. What the two flags mean, why a failed drill leaves
-its stack standing, and the four places a restore can land are all in the
-script's own header — that is the single home for that rule.
-
-One drill at a time per stack, refused rather than queued. The lock is a file
-beside the checkout, `.restore-drill.<stack>.lock`, because that is the one path
-a systemd unit, a `sudo` shell and a login shell all resolve alike — the runtime
-directory each of those is given is private to it, and the collision worth
-catching is precisely the one between the timer's drill and a drill run by hand.
-Not `/tmp`: predictable name, mode 1777, and any local user could take the lock
-first and stop the drill for good.
-
-**When a job stops running.** Set `HEARTBEAT_URL` and `HEARTBEAT_TOKEN` in
-`.env` and systemd reports both jobs through `scripts/notify.sh`:
-`ExecStartPost=` POSTs `$HEARTBEAT_URL/heartbeat/<slug>` after a run that exited
-0, and `OnFailure=` starts `project-template-notify-failure@<slug>`, which POSTs
-`$HEARTBEAT_URL/failure/<slug>` carrying the failed unit's name as the body.
-Both bear the token; both use the job's one slug, because the watchdog knows
-only slugs a heartbeat has declared and 404s on the rest.
-
-The reporting is in the units and not in the scripts on purpose. A heartbeat
-means the **scheduled** run happened, and only systemd knows whether a run was
-the scheduled one — a script that reported on itself would let
-`scripts/preview.sh --restore`, or anybody rehearsing by hand, forge the weekly
-drill's heartbeat and leave a dead timer looking healthy. Leave either variable
-unset and all of it is a no-op. A ping that does not land is printed and
-otherwise ignored — the job did its work, and the alert for a heartbeat that
-never arrived is the same alert. It is bounded as well as ignored: an
-unreachable watchdog that swallowed packets would otherwise hang `ExecStartPost=`
-until the job's own `TimeoutStartSec` killed it, and systemd would then page for
-a backup that had in fact succeeded.
-
-Both jobs' `.timer` and `.service` are tracked here, and so is the notifier's
-template, so the schedule is something a diff shows. Installing and enabling
-them is the one step no repo can take for itself, and systemd's unit namespace
-is the whole box, so they go in under this project's name:
-
-```sh
-for unit in backup restore-drill; do
-  sudo cp "scripts/$unit.service" "/etc/systemd/system/project-template-$unit.service"
-  sudo cp "scripts/$unit.timer" "/etc/systemd/system/project-template-$unit.timer"
-done
-# No timer of its own: the OnFailure= lines are the only thing that starts it.
-sudo cp 'scripts/notify-failure@.service' \
-  '/etc/systemd/system/project-template-notify-failure@.service'
-sudo systemctl daemon-reload
-sudo systemctl enable --now project-template-backup.timer project-template-restore-drill.timer
-```
-
-## Going live
-
-`package.json` carries one field saying whether this repo is serving real
-people:
-
-```json
-{ "lifecycle": "dev" }
-```
-
-Moving it to `"live"` is a deliberate commit, and it is the only thing to
-remember: the repo contract derives the rest from that one word, and CI says so
-by name until each is true. It only moves up — going back to `"dev"` is refused
-unless the call site names `lifecycle-retire`. See CLAUDE.md, "Going live".
-
-## Deploy
-
-```sh
-sudo docker compose build && sudo docker compose up -d
-```
-
-The app is built inside the image; `up -d` alone deploys nothing. Install
-`infra/nginx/*.conf` into `/etc/nginx/sites-enabled/`, point the hostname at this
-box in Cloudflare (proxied, Full (strict)), and put the origin certificate at the
-paths that file names. Nothing here edits an environment file: `deploy.env`
-already names what is served, and a checkout's `.env` is its own.
-<!-- scaffold:monorepo -->
-
-The API answers on `api.<hostname>`, so that name needs a record of its own and
-the origin certificate has to cover both — the two names `deploy.env` carries.
-<!-- scaffold:monorepo -->
