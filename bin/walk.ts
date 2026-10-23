@@ -22,22 +22,25 @@ import {
 } from "../tests/fixtures/doors";
 import { glossary } from "../tests/fixtures/warehouse";
 
-async function connect<Actor>(...[directory, words, actor]: Parameters<typeof mcpServer<Actor>>) {
+async function connect<Actor>(
+  ...[directory, words, actor, claims]: Parameters<typeof mcpServer<Actor>>
+) {
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await mcpServer(directory, words, actor).connect(serverSide);
+  await mcpServer(directory, words, actor, claims).connect(serverSide);
   const client = new Client({ name: "walk", version: "1" });
   await client.connect(clientSide);
   return client;
 }
 
+const walker = { sub: "walk", name: "bin/walk.ts" };
 const warehouse = warehouseDirectory();
 const api = apiDirectory();
 const doors = [
   {
     name: "warehouse",
-    client: await connect(warehouse, instructionsFor(glossary, warehouse), warehouseAdmin),
+    client: await connect(warehouse, instructionsFor(glossary, warehouse), warehouseAdmin, walker),
   },
-  { name: "api", client: await connect(api, instructionsFor("", api), apiCaller) },
+  { name: "api", client: await connect(api, instructionsFor("", api), apiCaller, walker) },
 ];
 
 const textOf = (result: Awaited<ReturnType<Client["callTool"]>>) =>

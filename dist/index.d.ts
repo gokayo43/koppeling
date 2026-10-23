@@ -23,7 +23,7 @@ type Outcome = {
 /** One callable thing a program declares, as the door offers it. */
 interface Operation<Actor> {
   readonly name: string;
-  /** The first segment of the name: a router key, or a path's first segment. */
+  /** The part of the program it belongs to: by default its name's first segment. */
   readonly area: string;
   readonly kind: Kind;
   readonly description: string | undefined;
@@ -59,12 +59,19 @@ interface ElysiaOptions<Actor> {
   };
   /** The path prefix the door serves, such as `/api/v1`; the whole app when absent. */
   readonly mount?: string;
+  /**
+   * The area a route belongs to, from its name's segments (its path under the
+   * mount, a `:param` by its name); the first segment when absent. The
+   * operation's name does not change.
+   */
+  readonly area?: (segments: readonly string[]) => string;
 }
 /**
  * The catalogue of an Elysia 1.4 app's routes under `mount`: each named by its
  * path's segments and its method, and run through `app.handle` with the
  * actor's credential, so the route's own auth and validation run as for any
- * client. WebSocket routes are skipped and named in the boot report.
+ * client. WebSocket routes and the routes the program hides from its own
+ * documentation (`detail.hide`) are skipped and named in the boot report.
  */
 export declare function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>): Catalogue<Actor>;
 //#endregion

@@ -1,6 +1,13 @@
 import type { AnyTRPCRouter, inferRouterContext } from "@trpc/server";
 
-import { catalogue, type Catalogue, type Declared, type Kind, type Note } from "../catalogue";
+import {
+  catalogue,
+  firstSegment,
+  type Catalogue,
+  type Declared,
+  type Kind,
+  type Note,
+} from "../catalogue";
 import { toJson, type Json } from "../json";
 import { allOf, describeSchema, type Described } from "../schema";
 
@@ -57,6 +64,7 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
     const owner = `tRPC procedure "${path}"`;
     declared.push({
       name: path,
+      area: firstSegment(path),
       kind,
       description: definition.description,
       input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,

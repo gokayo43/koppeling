@@ -70,6 +70,15 @@ export function apiApp(invoked: (route: string) => void = () => {}) {
     })
     .get("/tree", () => ({ brands: [] }), {
       detail: { summary: "The brand, model and chassis tree" },
+    })
+    .post("/picks", ({ status }) => status(201, { pick_id: "pk-1" }), {
+      body: t.Object({ lookup_id: t.String(), option_index: t.Number() }),
+      response: { 201: t.Object({ pick_id: t.String() }), 404: t.Object({ error: t.String() }) },
+      detail: { summary: "Record the vehicle a shopper picked" },
+    })
+    .get("/retired", ({ status }) => status(410, "Gone"), {
+      response: { 410: t.Literal("Gone") },
+      detail: { summary: "A route that only ever refuses" },
     });
 
   const products = new Elysia({ prefix: "/api/v1/products" })
@@ -118,6 +127,7 @@ export function apiApp(invoked: (route: string) => void = () => {}) {
       body: t.Object({ code: t.String() }),
       detail: { summary: "Check a discount code" },
     })
+    .post("/honeypot", () => ({}), { detail: { hide: true } })
     .get("/fail", () => {
       throw new Error("database unavailable");
     });

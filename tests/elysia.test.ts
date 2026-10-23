@@ -90,6 +90,7 @@ test("routes outside the mount are not the door's, and WebSocket routes are skip
   expect(derived.operations.some(({ name }) => name.startsWith("health"))).toBe(false);
   expect(derived.skipped).toEqual([
     { name: "live.ws", reason: "a WebSocket route, which the door does not serve" },
+    { name: "orders.honeypot.post", reason: "hidden by the program" },
   ]);
 });
 
@@ -122,6 +123,44 @@ test("the input composes the route's params, query and body, and the output is i
   });
   expect(operation("orders.post").input).toMatchObject({
     properties: { body: { anyOf: [{ type: "object" }, {}] } },
+  });
+});
+
+test("a response map without 200 describes its lowest 2xx, or no output when it has none", () => {
+  expect(operation("vehicles.picks.post").output).toMatchObject({
+    type: "object",
+    required: ["pick_id"],
+  });
+  expect(operation("vehicles.retired.get").output).toBeUndefined();
+});
+
+test("an area function groups operations without renaming them, held to the name rule", () => {
+  const app = new Elysia({ prefix: "/api" })
+    .get("/admin/products/:id", () => 1)
+    .get("/admin/orders", () => 1)
+    .get("/vehicles/tree", () => 1);
+  const derived = fromElysia(app, {
+    credential,
+    mount: "/api",
+    area: (segments) =>
+      segments[0] === "admin" ? `admin.${segments[1] ?? ""}` : (segments[0] ?? ""),
+  });
+
+  expect(derived.operations.map(({ name, area }) => `${name} ${area}`)).toEqual([
+    "admin.orders.get admin.orders",
+    "admin.products.id.get admin.products",
+    "vehicles.tree.get vehicles",
+  ]);
+  expect(() =>
+    fromElysia(app, { credential, mount: "/api", area: () => "beheer producten" }),
+  ).toThrow('"beheer producten" is not a valid area name');
+});
+
+test("a route the program hides from its own documentation is skipped and named", () => {
+  expect(api().operations.some(({ name }) => name === "orders.honeypot.post")).toBe(false);
+  expect(api().skipped).toContainEqual({
+    name: "orders.honeypot.post",
+    reason: "hidden by the program",
   });
 });
 
@@ -203,6 +242,35 @@ test("a missing path parameter or an input that is not an object is refused befo
   });
   expect(await token?.run(apiCaller, "ord-1")).toHaveProperty("refusal");
   expect(invoked).toEqual([]);
+});
+
+test("named models are read from the app's definitions, never through its compiling models getter", () => {
+  const models = Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => [
+      `nfp.m${index}`,
+      t.Object({ [`field${index}`]: t.String() }),
+    ]),
+  );
+  const app = new Elysia({ prefix: "/api" }).model(models);
+  for (const name of Object.keys(models)) {
+    app.post(`/${name.replace("nfp.", "")}`, ({ body }) => body, {
+      body: name,
+      response: { 200: name },
+    });
+  }
+  let reads = 0;
+  Object.defineProperty(app, "models", {
+    get: () => {
+      reads += 1;
+      return undefined;
+    },
+  });
+  const derived = fromElysia(app, { credential, mount: "/api" });
+
+  expect(reads).toBe(0);
+  expect(derived.operations.find(({ name }) => name === "m3.post")?.input).toMatchObject({
+    properties: { body: { required: ["field3"] } },
+  });
 });
 
 test("a route naming a model the app does not have fails the boot, naming the route", () => {

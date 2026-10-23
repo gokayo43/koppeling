@@ -16,7 +16,9 @@ import { glossary, type WarehouseActor } from "./fixtures/warehouse";
 
 async function connected<Actor>(directory: Directory<Actor>, actor: Actor, words = glossary) {
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await mcpServer(directory, instructionsFor(words, directory), actor).connect(serverSide);
+  await mcpServer(directory, instructionsFor(words, directory), actor, { sub: "person-1" }).connect(
+    serverSide,
+  );
   const client = new Client({ name: "tools-test", version: "1" });
   await client.connect(clientSide);
   return {

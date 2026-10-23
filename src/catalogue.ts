@@ -11,7 +11,7 @@ export type Outcome = { readonly value: Json } | { readonly refusal: string };
 /** One callable thing a program declares, as the door offers it. */
 export interface Operation<Actor> {
   readonly name: string;
-  /** The first segment of the name: a router key, or a path's first segment. */
+  /** The part of the program it belongs to: by default its name's first segment. */
   readonly area: string;
   readonly kind: Kind;
   readonly description: string | undefined;
@@ -26,7 +26,7 @@ export interface Operation<Actor> {
 }
 
 /** An operation as an adapter derives it, before the catalogue places it. */
-export type Declared<Actor> = Omit<Operation<Actor>, "area" | "input" | "output"> & {
+export type Declared<Actor> = Omit<Operation<Actor>, "input" | "output"> & {
   readonly input: Described;
   readonly output: Described | undefined;
 };
@@ -58,18 +58,22 @@ const byName = (left: { readonly name: string }, right: { readonly name: string 
   left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
 
 /**
- * The catalogue of `declared`, in name order. A name outside MCP's characters
- * or one two operations share throws, naming it: both are a program the door
- * would otherwise offer wrongly, and the boot is where a host can fix it.
+ * The catalogue of `declared`, in name order. A name or area outside MCP's
+ * characters, or a name two operations share, throws, naming it: each is a
+ * program the door would otherwise offer wrongly, and the boot is where a host
+ * can fix it.
  */
 export function catalogue<Actor>(
   declared: readonly Declared<Actor>[],
   skipped: readonly Note[],
 ): Catalogue<Actor> {
   const seen = new Set<string>();
-  for (const { name } of declared) {
+  for (const { name, area } of declared) {
     if (!NAME.test(name) || name.length > MAX_NAME_LENGTH) {
       throw new Error(`"${name}" is not a valid operation name (letters, digits, _, - and .)`);
+    }
+    if (!NAME.test(area) || area.length > MAX_NAME_LENGTH) {
+      throw new Error(`"${area}" is not a valid area name (letters, digits, _, - and .)`);
     }
     if (seen.has(name)) throw new Error(`Two operations are both named "${name}"`);
     seen.add(name);
@@ -83,7 +87,6 @@ export function catalogue<Actor>(
   const operations = declared
     .map((operation) => ({
       ...operation,
-      area: areaOf(operation.name),
       input: schemaOf(operation.name, "input", operation.input),
       output:
         operation.output === undefined
@@ -98,7 +101,8 @@ export function catalogue<Actor>(
   };
 }
 
-function areaOf(name: string): string {
+/** An operation's area when its program names none: the first segment of its name. */
+export function firstSegment(name: string): string {
   const dot = name.indexOf(".");
   return dot === -1 ? name : name.slice(0, dot);
 }

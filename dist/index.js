@@ -59,14 +59,16 @@ const NAME = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const MAX_NAME_LENGTH = 128;
 const byName = (left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
 /**
-* The catalogue of `declared`, in name order. A name outside MCP's characters
-* or one two operations share throws, naming it: both are a program the door
-* would otherwise offer wrongly, and the boot is where a host can fix it.
+* The catalogue of `declared`, in name order. A name or area outside MCP's
+* characters, or a name two operations share, throws, naming it: each is a
+* program the door would otherwise offer wrongly, and the boot is where a host
+* can fix it.
 */
 function catalogue(declared, skipped) {
 	const seen = /* @__PURE__ */ new Set();
-	for (const { name } of declared) {
+	for (const { name, area } of declared) {
 		if (!NAME.test(name) || name.length > MAX_NAME_LENGTH) throw new Error(`"${name}" is not a valid operation name (letters, digits, _, - and .)`);
+		if (!NAME.test(area) || area.length > MAX_NAME_LENGTH) throw new Error(`"${area}" is not a valid area name (letters, digits, _, - and .)`);
 		if (seen.has(name)) throw new Error(`Two operations are both named "${name}"`);
 		seen.add(name);
 	}
@@ -82,7 +84,6 @@ function catalogue(declared, skipped) {
 	return {
 		operations: declared.map((operation) => ({
 			...operation,
-			area: areaOf(operation.name),
 			input: schemaOf(operation.name, "input", operation.input),
 			output: operation.output === void 0 ? void 0 : schemaOf(operation.name, "output", operation.output)
 		})).toSorted(byName),
@@ -90,7 +91,8 @@ function catalogue(declared, skipped) {
 		undescribed: undescribed.toSorted(byName)
 	};
 }
-function areaOf(name) {
+/** An operation's area when its program names none: the first segment of its name. */
+function firstSegment(name) {
 	const dot = name.indexOf(".");
 	return dot === -1 ? name : name.slice(0, dot);
 }
@@ -129,6 +131,7 @@ function objectToJson(value) {
 }
 //#endregion
 //#region src/schema.ts
+/** The symbol every TypeBox schema carries its kind under. */
 const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
 /**
 * A program's own schema for one value, as JSON Schema: Effect Schema through
@@ -144,14 +147,14 @@ function describeSchema(schema, owner) {
 	} catch (cause) {
 		return { undescribable: String(cause instanceof Error ? cause.message : cause).split("\n", 2).join(" ") };
 	}
-	if (converted === void 0) throw new Error(`${owner}: its schema is not Effect Schema, TypeBox or a Standard JSON Schema (zod 4), so the koppeling cannot read it`);
+	if (converted === void 0) throw new Error(`${owner}: its schema is not Effect Schema 3, TypeBox or a Standard JSON Schema (zod 4; Effect 4 through Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema))), so the koppeling cannot read it`);
 	if (!isJsonObject(converted)) return { undescribable: `it converts to ${JSON.stringify(converted)}` };
 	return { schema: converted };
 }
 /** The schema in JSON Schema, or `undefined` when it is in no language the door reads. */
 function convert(schema) {
 	if (Schema.isSchema(schema)) return toJson(JSONSchema.make(definedPart(schema)));
-	if (typeof schema !== "object" || schema === null) return void 0;
+	if (typeof schema !== "object" && typeof schema !== "function" || schema === null) return;
 	if (TYPEBOX_KIND in schema) return toJson(schema);
 	return standardJsonSchema(schema);
 }
@@ -208,7 +211,8 @@ const ORIGIN = "http://localhost";
 * The catalogue of an Elysia 1.4 app's routes under `mount`: each named by its
 * path's segments and its method, and run through `app.handle` with the
 * actor's credential, so the route's own auth and validation run as for any
-* client. WebSocket routes are skipped and named in the boot report.
+* client. WebSocket routes and the routes the program hides from its own
+* documentation (`detail.hide`) are skipped and named in the boot report.
 */
 function fromElysia(app, options) {
 	const mount = (options.mount ?? "").replace(/\/+$/, "");
@@ -217,11 +221,20 @@ function fromElysia(app, options) {
 	for (const route of app.routes) {
 		if (!route.path.startsWith(`${mount}/`)) continue;
 		const segments = route.path.slice(mount.length).split("/").filter(Boolean);
-		const name = [...segments.map(nameSegment), route.method.toLowerCase()].join(".");
+		const named = segments.map(nameSegment);
+		const name = [...named, route.method.toLowerCase()].join(".");
+		const hooks = route.hooks;
 		if (route.method === "WS") {
 			skipped.push({
 				name,
 				reason: "a WebSocket route, which the door does not serve"
+			});
+			continue;
+		}
+		if (field(field(hooks, "detail"), "hide") === true) {
+			skipped.push({
+				name,
+				reason: "hidden by the program"
 			});
 			continue;
 		}
@@ -233,12 +246,12 @@ function fromElysia(app, options) {
 			continue;
 		}
 		const owner = `Elysia route ${route.method} ${route.path}`;
-		const hooks = route.hooks;
 		const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
 		schemas.set("params", schemas.get("params") ?? pathParameters(segments));
 		const method = route.method;
 		declared.push({
 			name,
+			area: options.area?.(named) ?? firstSegment(name),
 			kind: method === "GET" || method === "HEAD" ? "read" : "write",
 			description: description(hooks),
 			input: inputSchema(schemas),
@@ -299,14 +312,28 @@ function requires(schema) {
 function responseSchema(app, hooks, owner) {
 	const response = field(hooks, "response");
 	if (response === void 0) return void 0;
-	return resolved(app, typeof response === "string" || field(response, "200") === void 0 ? response : field(response, "200"), `${owner} (response 200)`);
+	if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`);
+	const [status] = Object.keys(response).filter((key) => /^2\d\d$/.test(key)).toSorted();
+	return status === void 0 ? void 0 : resolved(app, field(response, status), `${owner} (response ${status})`);
 }
-/** A schema the route names by model, looked up the way Elysia looks it up. */
+/**
+* Whether a route's `response` maps status codes to schemas rather than being
+* one schema: a schema is a model's name, a TypeBox schema or a Standard
+* Schema, and a map is none of those.
+*/
+function isStatusMap(response) {
+	return typeof response === "object" && response !== null && !(TYPEBOX_KIND in response) && !("~standard" in response);
+}
+/**
+* A schema the route names by model, read from the app's own definitions.
+* Not through `app.models`: that getter compiles a validator for every model
+* on each read (CLAUDE.md, Gotchas, has the measurement).
+*/
 function resolved(app, schema, owner) {
 	if (typeof schema !== "string") return describeSchema(schema, owner);
-	const model = field(app.models, schema);
+	const model = field(field(field(app, "definitions"), "type"), schema);
 	if (model === void 0) throw new Error(`${owner}: names a model "${schema}" the app does not have`);
-	return describeSchema(field(model, "schema"), owner);
+	return describeSchema(model, owner);
 }
 /** `detail.summary` as the operation's line and `detail.description` below it. */
 function description(hooks) {
@@ -405,6 +432,7 @@ function fromTrpcRouter(router, options) {
 		const owner = `tRPC procedure "${path}"`;
 		declared.push({
 			name: path,
+			area: firstSegment(path),
 			kind,
 			description: definition.description,
 			input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,
@@ -646,7 +674,7 @@ function toDirectory(catalogue) {
 }
 /** An area's one line: the names of its operations, the area itself left off. */
 function summaryOf(area, operations) {
-	const leaves = operations.map(({ name }) => name === area ? name : name.slice(area.length + 1));
+	const leaves = operations.map(({ name }) => name.startsWith(`${area}.`) ? name.slice(area.length + 1) : name);
 	const shown = leaves.slice(0, AREA_LINE_NAMES).join(", ");
 	const rest = leaves.length - AREA_LINE_NAMES;
 	return rest > 0 ? `${shown} en ${rest} meer` : shown;
@@ -725,7 +753,7 @@ var OperationFailed = class extends Data.TaggedError("OperationFailed") {};
 * logged and answered with the door's generic sentence, so a database's words
 * never reach the person.
 */
-function call(directory, actor, name, input) {
+function call(directory, actor, claims, name, input) {
 	const operation = directory.byName.get(name);
 	if (operation === void 0) return Effect.succeed(unknownOperation(directory, name));
 	return Effect.tryPromise({
@@ -734,10 +762,32 @@ function call(directory, actor, name, input) {
 			name,
 			cause
 		})
-	}).pipe(Effect.map((outcome) => "refusal" in outcome ? refusal(outcome.refusal) : {
-		text: JSON.stringify(outcome.value),
-		structured: { result: outcome.value }
-	}), Effect.catchTag("OperationFailed", (failure) => Effect.logError(`Operation ${failure.name} failed`, Cause.die(failure.cause)).pipe(Effect.as(refusal(copy.internalError)))));
+	}).pipe(Effect.map((outcome) => "refusal" in outcome ? {
+		outcome: "refusal",
+		answered: refusal(outcome.refusal)
+	} : {
+		outcome: "value",
+		answered: {
+			text: JSON.stringify(outcome.value),
+			structured: { result: outcome.value }
+		}
+	}), Effect.catchTag("OperationFailed", (failure) => Effect.logError(`Operation ${failure.name} failed`, Cause.die(failure.cause)).pipe(Effect.as({
+		outcome: "failure",
+		answered: refusal(copy.internalError)
+	}))), Effect.tap(({ outcome }) => operation.kind === "write" ? audit(name, claims, outcome) : Effect.void), Effect.map(({ answered }) => answered));
+}
+/**
+* The one line every `call` of a write leaves: which operation, for whom, and
+* whether the program answered a value, refused, or failed.
+*/
+function audit(operation, claims, outcome) {
+	const name = claims["name"];
+	return Effect.logInfo("koppeling write").pipe(Effect.annotateLogs({
+		operation,
+		sub: claims.sub ?? null,
+		name: typeof name === "string" ? name : null,
+		outcome
+	}));
 }
 function result(answered) {
 	return {
@@ -757,7 +807,7 @@ const text = (description) => ({
 * The MCP server for one request as `actor`: the four tools, in the order a
 * person works, and the instructions.
 */
-function mcpServer(directory, instructions, actor) {
+function mcpServer(directory, instructions, actor, claims) {
 	const server = new McpServer({
 		name: "koppeling",
 		version: "1"
@@ -814,7 +864,7 @@ function mcpServer(directory, instructions, actor) {
 			readOnlyHint: false,
 			destructiveHint: true
 		}
-	}, async ({ name, input }) => result(await Effect.runPromise(call(directory, actor, name, input))));
+	}, async ({ name, input }) => result(await Effect.runPromise(call(directory, actor, claims, name, input))));
 	return server;
 }
 //#endregion
@@ -841,22 +891,22 @@ function koppeling(options) {
 		scopes_supported: options.resource.scopes,
 		bearer_methods_supported: ["header"]
 	};
-	const serverFor = (actor) => mcpServer(operations, instructions, actor);
+	const serverFor = (actor, claims) => mcpServer(operations, instructions, actor, claims);
 	/**
 	* A 2025-era request (the `initialize` handshake and what follows it) is
 	* served the way the portal's door serves Claude Desktop today; a 2026-07-28
 	* request goes to the SDK's own per-request handler.
 	*/
-	const serve = async (request, actor) => {
+	const serve = async (request, actor, claims) => {
 		if (await isLegacyRequest(request)) {
 			const transport = new WebStandardStreamableHTTPServerTransport({
 				sessionIdGenerator: void 0,
 				enableJsonResponse: true
 			});
-			await serverFor(actor).connect(transport);
+			await serverFor(actor, claims).connect(transport);
 			return transport.handleRequest(request);
 		}
-		const modern = createMcpHandler(() => serverFor(actor), { legacy: "reject" });
+		const modern = createMcpHandler(() => serverFor(actor, claims), { legacy: "reject" });
 		try {
 			return await modern.fetch(request);
 		} finally {
@@ -873,7 +923,7 @@ function koppeling(options) {
 	})) : Effect.runPromise(verify(request).pipe(Effect.flatMap((claims) => Effect.tryPromise({
 		try: async () => options.actorFor(claims),
 		catch: (cause) => new PersonUnreachable({ cause })
-	})), Effect.flatMap((decision) => "refusal" in decision ? Effect.fail(new Refused({ sentence: decision.refusal })) : Effect.promise(() => serve(request, decision.actor))), Effect.catchTags({
+	}).pipe(Effect.flatMap((decision) => "refusal" in decision ? Effect.fail(new Refused({ sentence: decision.refusal })) : Effect.promise(() => serve(request, decision.actor, claims))))), Effect.catchTags({
 		Unauthenticated: ({ sentence, tokenGiven }) => Effect.succeed(refusalResponse(401, sentence, { "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}"${tokenGiven ? ", error=\"invalid_token\"" : ""}` })),
 		Refused: ({ sentence }) => Effect.succeed(refusalResponse(403, sentence)),
 		PersonUnreachable: ({ cause }) => Effect.logError("The host's actorFor failed", Cause.die(cause)).pipe(Effect.as(refusalResponse(503, copy.personUnreachable))),
