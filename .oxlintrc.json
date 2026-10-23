@@ -2,7 +2,6 @@
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
   "extends": ["./node_modules/@gokayo43/dev-config/oxlint.base.json"],
   "env": {
-    "browser": true,
     "node": true,
     "es2024": true
   },
@@ -13,33 +12,22 @@
         "project": "./tsconfig.json"
       }
     },
-    "boundaries/flag-as-external": {
-      "customSourcePatterns": ["**/*.css?url"]
-    },
     "boundaries/elements": [
       {
-        "type": "domain",
-        "pattern": "src/domain"
+        "type": "adapters",
+        "pattern": "src/adapters"
       },
       {
-        "type": "server",
-        "pattern": "src/server"
+        "type": "core",
+        "pattern": "src"
       },
       {
-        "type": "routes",
-        "pattern": "src/routes"
+        "type": "build",
+        "pattern": "bin"
       },
       {
-        "type": "components",
-        "pattern": "src/components"
-      },
-      {
-        "type": "lib",
-        "pattern": "src/lib"
-      },
-      {
-        "type": "scripts",
-        "pattern": "scripts"
+        "type": "tests",
+        "pattern": "tests"
       }
     ]
   },
@@ -53,55 +41,31 @@
           {
             "from": {
               "element": {
-                "type": "domain"
+                "type": "core"
               }
             },
             "disallow": [
               {
                 "to": {
                   "element": {
-                    "type": "server"
-                  }
-                }
-              },
-              {
-                "to": {
-                  "element": {
-                    "type": "routes"
+                    "type": "adapters"
                   }
                 }
               }
             ],
-            "message": "the domain core is pure — it must not reach into server or route code"
-          },
-          {
-            "from": {
-              "element": {
-                "type": "server"
-              }
-            },
-            "disallow": [
-              {
-                "to": {
-                  "element": {
-                    "type": "routes"
-                  }
-                }
-              }
-            ],
-            "message": "server modules must not import route modules"
+            "message": "the door reads a catalogue and knows no program; only the public entry re-exports the adapters"
           }
         ]
       }
     ]
   },
-  "ignorePatterns": [
-    "node_modules/**",
-    ".output/**",
-    ".nitro/**",
-    "**/.tanstack/**",
-    "dist/**",
-    "drizzle/**",
-    "**/routeTree.gen.ts"
-  ]
+  "overrides": [
+    {
+      "files": ["src/index.ts"],
+      "rules": {
+        "boundaries/dependencies": "off"
+      }
+    }
+  ],
+  "ignorePatterns": ["node_modules/**", "dist/**", "coverage/**"]
 }

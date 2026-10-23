@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    uses: gokayo43/dev-config/.github/workflows/check.yml@bf443953e3c8dcd80ed5f12872f942e1d6d3d046 # v0.70.1
+    with:
+      # No `build: true`, deliberately: dist/ is committed, and the suite's
+      # freshness case compares it with a build of its own. A build before the
+      # gate would overwrite the artifacts under test with the ones they are
+      # compared against, and the case would pass over anything.
+      #
+      # The package has no runtime environment: nothing here reads a variable,
+      # so there is no .env for the contract's secrets rules to be about.
+      contract-exemptions: secrets
