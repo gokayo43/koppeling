@@ -72,23 +72,24 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
     bearer_methods_supported: ["header"],
   };
 
-  const serverFor = (actor: Actor) => mcpServer(operations, instructions, actor);
+  const serverFor = (actor: Actor, claims: JWTPayload) =>
+    mcpServer(operations, instructions, actor, claims);
 
   /**
    * A 2025-era request (the `initialize` handshake and what follows it) is
    * served the way the portal's door serves Claude Desktop today; a 2026-07-28
    * request goes to the SDK's own per-request handler.
    */
-  const serve = async (request: Request, actor: Actor): Promise<Response> => {
+  const serve = async (request: Request, actor: Actor, claims: JWTPayload): Promise<Response> => {
     if (await isLegacyRequest(request)) {
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
-      await serverFor(actor).connect(transport);
+      await serverFor(actor, claims).connect(transport);
       return transport.handleRequest(request);
     }
-    const modern = createMcpHandler(() => serverFor(actor), { legacy: "reject" });
+    const modern = createMcpHandler(() => serverFor(actor, claims), { legacy: "reject" });
     try {
       return await modern.fetch(request);
     } finally {
@@ -109,12 +110,13 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
               Effect.tryPromise({
                 try: async () => options.actorFor(claims),
                 catch: (cause) => new PersonUnreachable({ cause }),
-              }),
-            ),
-            Effect.flatMap((decision) =>
-              "refusal" in decision
-                ? Effect.fail(new Refused({ sentence: decision.refusal }))
-                : Effect.promise(() => serve(request, decision.actor)),
+              }).pipe(
+                Effect.flatMap((decision) =>
+                  "refusal" in decision
+                    ? Effect.fail(new Refused({ sentence: decision.refusal }))
+                    : Effect.promise(() => serve(request, decision.actor, claims)),
+                ),
+              ),
             ),
             Effect.catchTags({
               Unauthenticated: ({ sentence, tokenGiven }) =>

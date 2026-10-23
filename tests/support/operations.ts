@@ -1,5 +1,5 @@
 /** Operations built in a case, for the modules that read a catalogue without running it. */
-import { catalogue, type Catalogue, type Kind } from "../../src/catalogue";
+import { catalogue, firstSegment, type Catalogue, type Kind } from "../../src/catalogue";
 
 export interface Sketch {
   readonly name: string;
@@ -13,6 +13,7 @@ export function sketched(sketches: readonly Sketch[], ran: string[] = []): Catal
   return catalogue(
     sketches.map((sketch) => ({
       name: sketch.name,
+      area: firstSegment(sketch.name),
       kind: sketch.kind ?? "read",
       description: sketch.description,
       input: {

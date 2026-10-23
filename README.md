@@ -35,6 +35,7 @@ const catalogue = fromTrpcRouter(appRouter, {
 const catalogue = fromElysia(app, {
   credential: (actor) => ({ authorization: `Bearer ${actor.apiKey}` }), // headers the app's own auth accepts
   mount: "/api/v1", // optional; the whole app when absent
+  area: (segments) => segments[0], // optional; groups operations into areas, names unchanged
 });
 
 const door = koppeling({
@@ -99,14 +100,24 @@ Nothing ever resolves a near miss on its own.
   `vehicles.lookup.lookup_id.selection.post`); `kind` is `read` for GET and
   HEAD; the description is `detail.summary` then `detail.description`; the
   input is `{ params, query, body }`, each as the route (and any guard)
-  declares it, a model named by string resolved from the app's models; the
-  output is the `response` map's 200 entry.
+  declares it, a model named by string read from the app's definitions; the
+  output is the `response` schema, or a `response` map's 200 entry, else its
+  lowest 2xx, else none. The area is the name's first segment, or what the
+  `area` option answers for the name's segments (the path under the mount, a
+  `:param` by its name), held to the same characters as a name. A WebSocket
+  route and a route whose `detail.hide` is true are skipped and named in the
+  boot report.
 - The first line of a description is the operation's line in `list` and
   `find`. A line that starts with `Gevolg:` is its side-effect line, which
   `describe` answers as `sideEffect`.
-- Schemas are converted from Effect Schema (`JSONSchema.make`, the encoded
+- Schemas are converted from Effect Schema 3 (`JSONSchema.make`, the encoded
   side; an input whose encoded side is `X | undefined` is described as `X` and
-  may be left out), TypeBox (as it is) and Standard JSON Schema (zod 4). A
+  may be left out), TypeBox (as it is) and Standard JSON Schema (zod 4, and
+  Effect 4). An Effect 4 host hands tRPC
+  `.input(Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema)))`:
+  tRPC validates through the Standard Schema half and the door describes
+  through the Standard JSON Schema half; `Schema.toStandardSchemaV1` alone
+  fails the boot. A
   schema in any other language fails the boot, naming the operation. A schema
   its own language cannot write as JSON Schema (an Effect `DateFromSelf`, a
   zod `z.date()`) is described as such, the operation is still offered, and
@@ -125,6 +136,9 @@ Nothing ever resolves a near miss on its own.
   Elysia any 5xx) is logged with the operation's name and answered with the
   door's own sentence, so a stack or a database's words never reach the person.
 - The operation runs at most once per `call`. The door retries nothing.
+- Every `call` of a `write` operation writes one line through Effect's logger,
+  `koppeling write`, annotated with `operation`, the token's `sub` and `name`,
+  and `outcome` (`value`, `refusal` or `failure`). A read writes none.
 
 ## Sign-in
 

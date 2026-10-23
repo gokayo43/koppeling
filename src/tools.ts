@@ -1,5 +1,6 @@
 import { fromJsonSchema, McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { Cause, Data, Effect } from "effect";
+import type { JWTPayload } from "jose";
 
 import type { Catalogue, Operation } from "./catalogue";
 import { copy } from "./copy";
@@ -42,7 +43,9 @@ export function toDirectory<Actor>(catalogue: Catalogue<Actor>): Directory<Actor
 
 /** An area's one line: the names of its operations, the area itself left off. */
 function summaryOf(area: string, operations: readonly Operation<never>[]): string {
-  const leaves = operations.map(({ name }) => (name === area ? name : name.slice(area.length + 1)));
+  const leaves = operations.map(({ name }) =>
+    name.startsWith(`${area}.`) ? name.slice(area.length + 1) : name,
+  );
   const shown = leaves.slice(0, AREA_LINE_NAMES).join(", ");
   const rest = leaves.length - AREA_LINE_NAMES;
   return rest > 0 ? `${shown} en ${rest} meer` : shown;
@@ -156,9 +159,10 @@ class OperationFailed extends Data.TaggedError("OperationFailed")<{
  * logged and answered with the door's generic sentence, so a database's words
  * never reach the person.
  */
-function call<Actor>(
+export function call<Actor>(
   directory: Directory<Actor>,
   actor: Actor,
+  claims: JWTPayload,
   name: string,
   input: Json | undefined,
 ): Effect.Effect<Answer> {
@@ -170,14 +174,40 @@ function call<Actor>(
   }).pipe(
     Effect.map((outcome) =>
       "refusal" in outcome
-        ? refusal(outcome.refusal)
-        : { text: JSON.stringify(outcome.value), structured: { result: outcome.value } },
+        ? { outcome: "refusal" as const, answered: refusal(outcome.refusal) }
+        : {
+            outcome: "value" as const,
+            answered: {
+              text: JSON.stringify(outcome.value),
+              structured: { result: outcome.value },
+            },
+          },
     ),
     Effect.catchTag("OperationFailed", (failure) =>
       Effect.logError(`Operation ${failure.name} failed`, Cause.die(failure.cause)).pipe(
-        Effect.as(refusal(copy.internalError)),
+        Effect.as({ outcome: "failure" as const, answered: refusal(copy.internalError) }),
       ),
     ),
+    Effect.tap(({ outcome }) =>
+      operation.kind === "write" ? audit(name, claims, outcome) : Effect.void,
+    ),
+    Effect.map(({ answered }) => answered),
+  );
+}
+
+/**
+ * The one line every `call` of a write leaves: which operation, for whom, and
+ * whether the program answered a value, refused, or failed.
+ */
+function audit(operation: string, claims: JWTPayload, outcome: "value" | "refusal" | "failure") {
+  const name = claims["name"];
+  return Effect.logInfo("koppeling write").pipe(
+    Effect.annotateLogs({
+      operation,
+      sub: claims.sub ?? null,
+      name: typeof name === "string" ? name : null,
+      outcome,
+    }),
   );
 }
 
@@ -199,6 +229,7 @@ export function mcpServer<Actor>(
   directory: Directory<Actor>,
   instructions: string,
   actor: Actor,
+  claims: JWTPayload,
 ): McpServer {
   const server = new McpServer({ name: "koppeling", version: "1" }, { instructions });
   const tools = copy.tools;
@@ -259,7 +290,8 @@ export function mcpServer<Actor>(
       }),
       annotations: { readOnlyHint: false, destructiveHint: true },
     },
-    async ({ name, input }) => result(await Effect.runPromise(call(directory, actor, name, input))),
+    async ({ name, input }) =>
+      result(await Effect.runPromise(call(directory, actor, claims, name, input))),
   );
   return server;
 }

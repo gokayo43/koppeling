@@ -50,6 +50,11 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   them the same way, and `src/adapters/trpc.ts` checks their shape and fails the
   boot when a release moves them. Re-run the suite on every tRPC bump. A router
   with lazy sub-routers fails the boot: their procedures exist only once loaded.
+- **Never read Elysia's `app.models`**: in 1.4.30 that getter compiles a
+  validator for every model on each read. The nfp-elysia mount measured 7.4 to
+  8.8 s per read against its 984 named-model references, about two hours of
+  boot. The adapter reads the raw schema from `app.definitions.type[name]`, and
+  `tests/elysia.test.ts` holds it to zero reads of the getter.
 - **Elysia finds a request's path by searching for `/` from index 11 of its
   URL**, so a request built on a short origin (`http://x`) answers 404 on every
   route; the adapter builds on `http://localhost`.

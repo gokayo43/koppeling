@@ -1,6 +1,13 @@
 import type { AnyElysia } from "elysia";
 
-import { catalogue, type Catalogue, type Declared, type Note, type Outcome } from "../catalogue";
+import {
+  catalogue,
+  firstSegment,
+  type Catalogue,
+  type Declared,
+  type Note,
+  type Outcome,
+} from "../catalogue";
 import { copy } from "../copy";
 import {
   isJsonArray,
@@ -10,13 +17,19 @@ import {
   type JsonObject,
   type JsonSchema,
 } from "../json";
-import { allOf, describeSchema, type Described } from "../schema";
+import { allOf, describeSchema, TYPEBOX_KIND, type Described } from "../schema";
 
 export interface ElysiaOptions<Actor> {
   /** The headers that make the app's own auth accept a request as `actor`. */
   readonly credential: (actor: Actor) => { readonly [header: string]: string };
   /** The path prefix the door serves, such as `/api/v1`; the whole app when absent. */
   readonly mount?: string;
+  /**
+   * The area a route belongs to, from its name's segments (its path under the
+   * mount, a `:param` by its name); the first segment when absent. The
+   * operation's name does not change.
+   */
+  readonly area?: (segments: readonly string[]) => string;
 }
 
 type Part = "params" | "query" | "body";
@@ -33,7 +46,8 @@ const ORIGIN = "http://localhost";
  * The catalogue of an Elysia 1.4 app's routes under `mount`: each named by its
  * path's segments and its method, and run through `app.handle` with the
  * actor's credential, so the route's own auth and validation run as for any
- * client. WebSocket routes are skipped and named in the boot report.
+ * client. WebSocket routes and the routes the program hides from its own
+ * documentation (`detail.hide`) are skipped and named in the boot report.
  */
 export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>): Catalogue<Actor> {
   const mount = (options.mount ?? "").replace(/\/+$/, "");
@@ -42,9 +56,15 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
   for (const route of app.routes) {
     if (!route.path.startsWith(`${mount}/`)) continue;
     const segments = route.path.slice(mount.length).split("/").filter(Boolean);
-    const name = [...segments.map(nameSegment), route.method.toLowerCase()].join(".");
+    const named = segments.map(nameSegment);
+    const name = [...named, route.method.toLowerCase()].join(".");
+    const hooks: unknown = route.hooks;
     if (route.method === "WS") {
       skipped.push({ name, reason: "a WebSocket route, which the door does not serve" });
+      continue;
+    }
+    if (field(field(hooks, "detail"), "hide") === true) {
+      skipped.push({ name, reason: "hidden by the program" });
       continue;
     }
     if (segments.length === 0) {
@@ -52,12 +72,12 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       continue;
     }
     const owner = `Elysia route ${route.method} ${route.path}`;
-    const hooks: unknown = route.hooks;
     const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
     schemas.set("params", schemas.get("params") ?? pathParameters(segments));
     const method = route.method;
     declared.push({
       name,
+      area: options.area?.(named) ?? firstSegment(name),
       kind: method === "GET" || method === "HEAD" ? "read" : "write",
       description: description(hooks),
       input: inputSchema(schemas),
@@ -146,19 +166,42 @@ function responseSchema(
 ): Described | undefined {
   const response = field(hooks, "response");
   if (response === undefined) return undefined;
-  const single = typeof response === "string" || field(response, "200") === undefined;
-  const schema = single ? response : field(response, "200");
-  return resolved(app, schema, `${owner} (response 200)`);
+  if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`);
+  const [status] = Object.keys(response)
+    .filter((key) => /^2\d\d$/.test(key))
+    .toSorted();
+  return status === undefined
+    ? undefined
+    : resolved(app, field(response, status), `${owner} (response ${status})`);
 }
 
-/** A schema the route names by model, looked up the way Elysia looks it up. */
+/**
+ * Whether a route's `response` maps status codes to schemas rather than being
+ * one schema: a schema is a model's name, a TypeBox schema or a Standard
+ * Schema, and a map is none of those.
+ */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- the route's response, as the app wrote it
+function isStatusMap(response: unknown): response is object {
+  return (
+    typeof response === "object" &&
+    response !== null &&
+    !(TYPEBOX_KIND in response) &&
+    !("~standard" in response)
+  );
+}
+
+/**
+ * A schema the route names by model, read from the app's own definitions.
+ * Not through `app.models`: that getter compiles a validator for every model
+ * on each read (CLAUDE.md, Gotchas, has the measurement).
+ */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a route's schema, in whichever language the app wrote it
 function resolved(app: AnyElysia, schema: unknown, owner: string): Described {
   if (typeof schema !== "string") return describeSchema(schema, owner);
-  const model = field(app.models, schema);
+  const model = field(field(field(app, "definitions"), "type"), schema);
   if (model === undefined)
     throw new Error(`${owner}: names a model "${schema}" the app does not have`);
-  return describeSchema(field(model, "schema"), owner);
+  return describeSchema(model, owner);
 }
 
 /** `detail.summary` as the operation's line and `detail.description` below it. */

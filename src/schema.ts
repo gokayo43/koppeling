@@ -3,7 +3,8 @@ import * as AST from "effect/SchemaAST";
 
 import { isJsonObject, toJson, type Json, type JsonSchema } from "./json";
 
-const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
+/** The symbol every TypeBox schema carries its kind under. */
+export const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
 
 /**
  * A program's schema as the door offers it: as JSON Schema, or, where the
@@ -33,7 +34,7 @@ export function describeSchema(schema: unknown, owner: string): Described {
   }
   if (converted === undefined) {
     throw new Error(
-      `${owner}: its schema is not Effect Schema, TypeBox or a Standard JSON Schema (zod 4), so the koppeling cannot read it`,
+      `${owner}: its schema is not Effect Schema 3, TypeBox or a Standard JSON Schema (zod 4; Effect 4 through Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema))), so the koppeling cannot read it`,
     );
   }
   if (!isJsonObject(converted))
@@ -45,7 +46,10 @@ export function describeSchema(schema: unknown, owner: string): Described {
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- describeSchema's input, passed on
 function convert(schema: unknown): Json | undefined {
   if (Schema.isSchema(schema)) return toJson(JSONSchema.make(definedPart(schema)));
-  if (typeof schema !== "object" || schema === null) return undefined;
+  // An Effect 4 schema is a function, so a function is looked into as well.
+  if ((typeof schema !== "object" && typeof schema !== "function") || schema === null) {
+    return undefined;
+  }
   if (TYPEBOX_KIND in schema) return toJson(schema);
   return standardJsonSchema(schema);
 }

@@ -17,6 +17,7 @@
         "@sinclair/typebox": "0.34.52",
         "@trpc/server": "11.19.0",
         "@types/bun": "1.4.3",
+        "effect4": "npm:effect@4.0.5",
         "elysia": "1.4.30",
         "eslint-import-resolver-typescript": "4.4.5",
         "eslint-plugin-boundaries": "7.2.0",
@@ -30,6 +31,18 @@
         "typescript": "7.0.2",
         "zod": "4.6.7",
       },
+      "peerDependencies": {
+        "@sinclair/typebox": "^0.34",
+        "@trpc/server": "^11",
+        "elysia": "^1.4",
+        "zod": "^4",
+      },
+      "optionalPeers": [
+        "@sinclair/typebox",
+        "@trpc/server",
+        "elysia",
+        "zod",
+      ],
     },
   },
   "trustedDependencies": [
@@ -525,6 +538,8 @@
     "dts-resolver": ["dts-resolver@3.0.0", "", { "peerDependencies": { "oxc-resolver": ">=11.0.0" }, "optionalPeers": ["oxc-resolver"] }, "sha512-1T1f+z+4tl9XD+m+0HBgWoL/nm0bOIffyWaUuUSBlFg/86IWvfx+wjNaO/ybU0AJzG9/Mi5hBUgGV6zCmWEN7Q=="],
 
     "effect": ["effect@3.22.3", "", { "dependencies": { "@standard-schema/spec": "^1.0.0", "fast-check": "^3.23.1" } }, "sha512-pQU7KTFcqHCjCbhMsiv2vFLPtCfKMspA3ChglcRfAMt/h7KlGoEtRL4eaM5Bq5chTgIysITM+fUAW87HQFKl3A=="],
+
+    "effect4": ["effect@4.0.5", "", {}, "sha512-BY4/28NlpOd99yzmV741xbVGmp+1U7tks4oB7F/Png64bTa5tm5eCA6W0RiXsnuLDDoJpjfVSo4Dnq4BZb/89Q=="],
 
     "elysia": ["elysia@1.4.30", "", { "dependencies": { "cookie": "^1.1.1", "exact-mirror": "^0.2.7", "fast-decode-uri-component": "^1.0.1", "memoirist": "^0.4.0" }, "peerDependencies": { "@sinclair/typebox": ">= 0.34.0 < 1", "@types/bun": ">= 1.2.0", "file-type": ">= 20.0.0", "openapi-types": ">= 12.0.0", "typescript": ">= 5.0.0" }, "optionalPeers": ["@types/bun", "typescript"] }, "sha512-S2qqV0CbM4faB1hQQ5IYoeYnAUinjHlzRduxaBc4OoNqh0GjOc8k6tt3hv5ozWcG6Svr6hugw6JL4zNke4jwfA=="],
 
