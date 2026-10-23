@@ -145,6 +145,16 @@ test("a guard's schema is composed with the route's own", () => {
   });
 });
 
+test("a 5xx answer is a failure the call throws, not a refusal it answers", async () => {
+  const settled = await operation("orders.fail.get")
+    .run(apiCaller, {})
+    .then(
+      (outcome) => JSON.stringify(outcome),
+      (error) => `threw ${String(error)}`,
+    );
+  expect(settled).toBe("threw Error: HTTP 500: database unavailable");
+});
+
 test("a call goes through the app's own auth with the actor's credential", async () => {
   const product = operation("products.id.get");
 

@@ -3,7 +3,7 @@ import { Cause, Data, Effect } from "effect";
 
 import type { Catalogue, Operation } from "./catalogue";
 import { copy } from "./copy";
-import { find } from "./find";
+import { find, FIND_MAX_LENGTH, FIND_MAX_WORDS, stems } from "./find";
 import type { Json, JsonObject } from "./json";
 
 /** How many of an area's operation names its one line carries. */
@@ -127,6 +127,8 @@ function describe(directory: Directory<never>, name: string): Answer {
 }
 
 function findAnswer(directory: Directory<never>, words: string): Answer {
+  if (new Set(stems(words)).size > FIND_MAX_WORDS)
+    return refusal(copy.tooManyWords(FIND_MAX_WORDS));
   const found = find(directory.operations, words);
   if (found.length === 0)
     return answer({
@@ -221,7 +223,7 @@ export function mcpServer<Actor>(
       description: tools.find.description,
       inputSchema: fromJsonSchema<{ words: string }>({
         type: "object",
-        properties: { words: text(tools.find.words) },
+        properties: { words: { ...text(tools.find.words), maxLength: FIND_MAX_LENGTH } },
         required: ["words"],
         additionalProperties: false,
       }),

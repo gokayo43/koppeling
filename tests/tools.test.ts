@@ -249,6 +249,33 @@ test("find executes nothing", async () => {
   expect(door.invoked).toEqual([]);
 });
 
+test("find refuses words past 200 characters or 20 distinct words, and searches nothing", async () => {
+  await using door = await warehouse();
+  const long = await door.client.callTool({
+    name: "find",
+    arguments: { words: "plank ".repeat(34) },
+  });
+  expect(long.isError).toBe(true);
+  expect(textOf(long)).toContain("200");
+
+  const many = Array.from(
+    { length: 21 },
+    (_, index) => `zoek${String.fromCharCode(97 + index)}m`,
+  ).join(" ");
+  const wide = await door.client.callTool({ name: "find", arguments: { words: many } });
+  expect(wide.isError).toBe(true);
+  expect(textOf(wide)).toBe(copy.tooManyWords(20));
+
+  const twenty = Array.from(
+    { length: 20 },
+    (_, index) => `zoek${String.fromCharCode(97 + index)}m`,
+  ).join(" ");
+  expect(
+    (await door.client.callTool({ name: "find", arguments: { words: twenty } })).isError,
+  ).toBeFalsy();
+  expect(door.invoked).toEqual([]);
+});
+
 test("a find that meets nothing says so and names the areas", async () => {
   await using door = await warehouse();
   const result = await door.client.callTool({ name: "find", arguments: { words: "offerte" } });
@@ -278,6 +305,24 @@ test("a write whose handler fails runs once and answers the door's sentence, not
   expect(result.isError).toBe(true);
   expect(textOf(result)).toBe(copy.internalError);
   expect(door.invoked).toEqual(["orders.ship"]);
+});
+
+test("an Elysia route that fails with a 5xx answers the door's sentence, and its body stays out", async () => {
+  const invoked: string[] = [];
+  await using door = await connected(
+    apiDirectory((route) => invoked.push(route)),
+    apiCaller,
+    "",
+  );
+  const result = await door.client.callTool({
+    name: "call",
+    arguments: { name: "orders.fail.get", input: {} },
+  });
+
+  expect(result.isError).toBe(true);
+  expect(textOf(result)).toBe(copy.internalError);
+  expect(textOf(result)).not.toContain("database unavailable");
+  expect(invoked).toEqual(["/api/v1/orders/fail"]);
 });
 
 test("an Elysia route's answer and refusal pass through call", async () => {

@@ -41,6 +41,7 @@ const copy = {
 	unknownOperationArea: (name, areas) => `Onbekende operatie "${name}". Kies eerst een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
 	nothingFound: (words, areas) => `Geen operatie gevonden bij "${words}". Kies een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
 	internalError: "Er is een interne fout opgetreden.",
+	tooManyWords: (most) => `Zoek met hooguit ${most} verschillende woorden.`,
 	undescribedSchema: "Het programma beschrijft deze waarde in een vorm die de koppeling niet als JSON Schema kan schrijven; het programma controleert haar zelf bij call.",
 	inputNotObject: "De invoer moet een object zijn, met params, query en body zoals het invoerschema ze noemt.",
 	missingPathParameter: (name) => `De invoer mist params.${name}, dat in het pad staat.`,
@@ -327,6 +328,7 @@ async function request(app, target, input) {
 		...carriesBody ? { body: JSON.stringify(body) } : {}
 	}));
 	const text = await response.text();
+	if (response.status >= 500) throw new Error(`HTTP ${response.status}: ${text}`);
 	if (!response.ok) return { refusal: `HTTP ${response.status}: ${text}` };
 	if (text === "") return { value: null };
 	if (!response.headers.get("content-type")?.includes("json")) return { value: text };
@@ -702,6 +704,7 @@ function describe(directory, name) {
 	});
 }
 function findAnswer(directory, words) {
+	if (new Set(stems(words)).size > 20) return refusal(copy.tooManyWords(20));
 	const found = find(directory.operations, words);
 	if (found.length === 0) return answer({
 		operations: [],
@@ -774,7 +777,10 @@ function mcpServer(directory, instructions, actor) {
 		description: tools.find.description,
 		inputSchema: fromJsonSchema({
 			type: "object",
-			properties: { words: text(tools.find.words) },
+			properties: { words: {
+				...text(tools.find.words),
+				maxLength: 200
+			} },
 			required: ["words"],
 			additionalProperties: false
 		}),

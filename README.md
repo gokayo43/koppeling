@@ -71,12 +71,12 @@ The types: `Catalogue<Actor>`, `Operation<Actor>`, `Kind` (`"read" | "write"`),
 
 Four tools, always these, in this order:
 
-| Tool       | Takes            | Answers                                                                                                        |
-| ---------- | ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| `list`     | `area?`          | No area: every area with its line and operation count. An exact area: its operations with name, kind and line. |
-| `find`     | `words`          | Up to ten operations whose name, area, description and input field names best meet the words. Runs nothing.    |
-| `describe` | `name`           | The whole operation: kind, description, side-effect line, input schema, output schema.                         |
-| `call`     | `name`, `input?` | Runs the operation once as the person; its value as text and as `structuredContent: { result }`.               |
+| Tool       | Takes            | Answers                                                                                                                                                 |
+| ---------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`     | `area?`          | No area: every area with its line and operation count. An exact area: its operations with name, kind and line.                                          |
+| `find`     | `words`          | Up to ten operations whose name, area, description and input field names best meet the words (at most 200 characters, 20 distinct words). Runs nothing. |
+| `describe` | `name`           | The whole operation: kind, description, side-effect line, input schema, output schema.                                                                  |
+| `call`     | `name`, `input?` | Runs the operation once as the person; its value as text and as `structuredContent: { result }`.                                                        |
 
 `list`, `find` and `describe` are annotated read-only; `call` is destructive,
 and its description tells the agent that a `write` operation changes data and
@@ -119,12 +119,11 @@ Nothing ever resolves a near miss on its own.
   that.
 - A refusal the program states is a tool error carrying the program's own
   sentence: for tRPC every `TRPCError` but `INTERNAL_SERVER_ERROR` (its input
-  parser's message included), for Elysia every answer that is not 2xx, as
-  `HTTP <status>: <body>`.
+  parser's message included), for Elysia every 4xx, as `HTTP <status>: <body>`.
 - A failure the program did not mean to show (for tRPC an
-  `INTERNAL_SERVER_ERROR`, which is what tRPC wraps an unexpected throw in) is
-  logged and answered with the door's own sentence, so a database's words never
-  reach the person.
+  `INTERNAL_SERVER_ERROR`, which is what tRPC wraps an unexpected throw in; for
+  Elysia any 5xx) is logged with the operation's name and answered with the
+  door's own sentence, so a stack or a database's words never reach the person.
 - The operation runs at most once per `call`. The door retries nothing.
 
 ## Sign-in

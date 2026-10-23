@@ -197,6 +197,10 @@ async function request(app: AnyElysia, target: Target, input: Json | undefined):
     }),
   );
   const text = await response.text();
+  // A 5xx is the program failing, and its body can carry a stack or a
+  // database's words: it is thrown, for the door to log and answer with its
+  // own sentence. A 4xx is the program's refusal and goes back as it is.
+  if (response.status >= 500) throw new Error(`HTTP ${response.status}: ${text}`);
   if (!response.ok) return { refusal: `HTTP ${response.status}: ${text}` };
   if (text === "") return { value: null };
   if (!response.headers.get("content-type")?.includes("json")) return { value: text };

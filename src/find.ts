@@ -5,6 +5,13 @@ import { isJsonArray, isJsonObject, type JsonSchema } from "./json";
 export const FIND_LIMIT = 10;
 
 /**
+ * The longest phrasing and the most distinct words one `find` takes: a
+ * phrasing is a sentence, and scoring costs words times operations.
+ */
+export const FIND_MAX_LENGTH = 200;
+export const FIND_MAX_WORDS = 20;
+
+/**
  * Words that say nothing about which operation is meant, in the two languages
  * a person here asks in. Without them "welke bestellingen moeten nog" would
  * rank on "moeten" as much as on "bestellingen".

@@ -52,6 +52,7 @@ export const copy = {
   nothingFound: (words: string, areas: readonly string[]) =>
     `Geen operatie gevonden bij "${words}". Kies een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
   internalError: "Er is een interne fout opgetreden.",
+  tooManyWords: (most: number) => `Zoek met hooguit ${most} verschillende woorden.`,
   undescribedSchema:
     "Het programma beschrijft deze waarde in een vorm die de koppeling niet als JSON Schema kan schrijven; het programma controleert haar zelf bij call.",
   inputNotObject:
