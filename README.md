@@ -143,7 +143,10 @@ cool-down), and checks `iss` against `identity.issuer`, `aud` against
 | `actorFor` answers `{ refusal }`         | 403, `{ "error": "<refusal>" }`                                    |
 
 The metadata document names the resource, the authorization server, the
-scopes and `bearer_methods_supported: ["header"]`.
+scopes and `bearer_methods_supported: ["header"]`. The door checks no scope
+itself: `actorFor` receives the claims, `scope` among them, and decides. A throw
+from `actorFor` rejects `handle`'s promise, for the host's framework to answer
+as its own failure.
 
 ## Protocol
 
