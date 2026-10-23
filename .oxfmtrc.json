@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "sortImports": true,
+  "sortTailwindcss": true,
+  "ignorePatterns": [
+    "node_modules/**",
+    ".output/**",
+    ".nitro/**",
+    "**/.tanstack/**",
+    "dist/**",
+    "drizzle/**",
+    "coverage/**",
+    "**/routeTree.gen.ts",
+    "bun.lock"
+  ]
+}

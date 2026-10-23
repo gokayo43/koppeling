@@ -1,0 +1,20 @@
+[Unit]
+Description=project-template restore drill
+After=docker.service
+Requires=docker.service
+OnFailure=project-template-notify-failure@project-template-drill.service
+
+[Service]
+Type=oneshot
+# A scratch compose project of its own, and --scratch-project is what hands it
+# to the drill: the script brings it up, restores a full copy of production onto
+# its own volume rather than into production's Postgres, and takes it down again
+# with its volumes the moment the drill passes — whether or not this run was the
+# one that started it. The age identity is BACKUP_AGE_KEY in the repo's .env, so
+# no key path is written down twice.
+ExecStart=/opt/project-template/scripts/restore-drill.sh --scratch-project project-template-drill
+ExecStartPost=/opt/project-template/scripts/notify.sh heartbeat project-template-drill
+# A decrypt, a whole psql load and a table count. A drill killed on this bound
+# leaves the stack and the copy standing, like a failed one — the next run's
+# pass is what takes both away.
+TimeoutStartSec=1800

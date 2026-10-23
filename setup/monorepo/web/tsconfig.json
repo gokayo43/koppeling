@@ -1,0 +1,10 @@
+{
+  "extends": "@gokayo43/dev-config/tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "bun"],
+    "paths": { "~/*": ["./src/*"] }
+  },
+  "include": ["src", "tests", "vite.config.ts"]
+}

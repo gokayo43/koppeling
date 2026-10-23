@@ -1,0 +1,107 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "extends": ["./node_modules/@gokayo43/dev-config/oxlint.base.json"],
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "jsPlugins": ["eslint-plugin-boundaries"],
+  "settings": {
+    "import/resolver": {
+      "typescript": {
+        "project": "./tsconfig.json"
+      }
+    },
+    "boundaries/flag-as-external": {
+      "customSourcePatterns": ["**/*.css?url"]
+    },
+    "boundaries/elements": [
+      {
+        "type": "domain",
+        "pattern": "src/domain"
+      },
+      {
+        "type": "server",
+        "pattern": "src/server"
+      },
+      {
+        "type": "routes",
+        "pattern": "src/routes"
+      },
+      {
+        "type": "components",
+        "pattern": "src/components"
+      },
+      {
+        "type": "lib",
+        "pattern": "src/lib"
+      },
+      {
+        "type": "scripts",
+        "pattern": "scripts"
+      }
+    ]
+  },
+  "rules": {
+    "boundaries/no-unknown-dependencies": "error",
+    "boundaries/dependencies": [
+      "error",
+      {
+        "default": "allow",
+        "policies": [
+          {
+            "from": {
+              "element": {
+                "type": "domain"
+              }
+            },
+            "disallow": [
+              {
+                "to": {
+                  "element": {
+                    "type": "server"
+                  }
+                }
+              },
+              {
+                "to": {
+                  "element": {
+                    "type": "routes"
+                  }
+                }
+              }
+            ],
+            "message": "the domain core is pure — it must not reach into server or route code"
+          },
+          {
+            "from": {
+              "element": {
+                "type": "server"
+              }
+            },
+            "disallow": [
+              {
+                "to": {
+                  "element": {
+                    "type": "routes"
+                  }
+                }
+              }
+            ],
+            "message": "server modules must not import route modules"
+          }
+        ]
+      }
+    ]
+  },
+  "ignorePatterns": [
+    "node_modules/**",
+    ".output/**",
+    ".nitro/**",
+    "**/.tanstack/**",
+    "dist/**",
+    "drizzle/**",
+    "**/routeTree.gen.ts"
+  ]
+}

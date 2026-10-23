@@ -1,0 +1,89 @@
+name: project-template
+
+# Every port binds to 127.0.0.1: nginx is the only thing that reaches these, and
+# the host firewall is not the only line of defence. Memory limits are not
+# optional either — several unrelated stacks share this box, and without caps the
+# kernel OOM killer picks its victim by score rather than by who caused the spike.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: project_template
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: project_template
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=384MB
+      - -c
+      - max_connections=25
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5435}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U project_template -d project_template"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Applies pending drizzle migrations, then exits. `web` waits on it completing
+  # successfully, so a failed migration keeps the old app running rather than
+  # starting a new one against a schema it does not match.
+  migrate:
+    build:
+      context: .
+      target: deps
+    command: ["bun", "run", "db:migrate"]
+    environment:
+      DATABASE_URL: postgres://project_template:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/project_template
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 512m
+    restart: "no"
+    x-no-healthcheck: "tests/migrate.test.ts -- one-shot job; it applies the migrations and returns, so there is no steady state to probe"
+
+  web:
+    build:
+      context: .
+      target: runtime
+    restart: unless-stopped
+    # Which environment's origins this stack runs at: the deployed one by
+    # default, the preview's where scripts/preview.sh names its own file. A
+    # file rather than a `${SITE_URL}` out of .env, because .env is a checkout's
+    # own dev environment and this box is a deploy target as well as a checkout.
+    env_file:
+      - ${ORIGINS_ENV:-deploy.env}
+    environment:
+      DATABASE_URL: postgres://project_template:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/project_template
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5180}:3000"
+    mem_limit: 1g
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # The oven/bun image carries no curl or wget, so the probe is bun itself.
+    # /api/health answers 503 when the database is unreachable or missing this
+    # schema, and a non-2xx has to fail the check — hence the explicit r.ok test.
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  pgdata:

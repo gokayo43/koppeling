@@ -1,0 +1,32 @@
+{
+  "name": "project-template",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "bun run setup.ts",
+    "dev": "bun scripts/worktree.ts --provision --ports env -u PORT bunx --bun vite dev",
+    "build": "vite build",
+    "start": "HOST=${HOST:-127.0.0.1} bun .output/server/index.mjs",
+    "lint": "oxlint --report-unused-disable-directives-severity=error",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "knip": "knip",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run knip",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun scripts/worktree.ts --provision bun run src/server/migrate.ts",
+    "prepare": "lefthook install || true",
+    "worktree:clean": "bun scripts/worktree-clean.ts",
+    "preview": "scripts/preview.sh",
+    "preview:capacity": "scripts/preview-capacity.sh",
+    "preview:down": "scripts/preview-down.sh"
+  },
+  "packageManager": "bun@1.3.11",
+  "lifecycle": "dev",
+  "trustedDependencies": [
+    "lefthook",
+    "esbuild"
+  ]
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the project-template Postgres backup nightly
+
+[Timer]
+# Stagger against the other stacks on this box so two pg_dumps never overlap.
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

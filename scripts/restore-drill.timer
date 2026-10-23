@@ -1,0 +1,11 @@
+[Unit]
+Description=Rehearse the project-template restore weekly
+
+[Timer]
+# Pick an hour clear of this repo's own backup timer, so the drill reads a dump
+# that has finished rather than one still being written.
+OnCalendar=Sun *-*-* 05:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

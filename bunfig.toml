@@ -1,0 +1,25 @@
+[install]
+# Supply-chain protection: refuse any version published in the last 7 days, so a
+# compromised release that is detected and yanked within hours never reaches the
+# lockfile. Paired with saveExact for exact, auditable pins.
+#
+# To bypass for one package (e.g. an urgent CVE patch):
+#   minimumReleaseAgeExcludes = ["pkg-name"]
+minimumReleaseAge = 604800 # 7 days, in seconds
+exact = true
+
+[test]
+# A floor, not a target: it catches "shipped without tests", it is not something
+# to chase. CI's `bun test --coverage` is what applies it; a local run is
+# unfloored by design, and the `coverage` key must stay absent — either spelling
+# takes the where-the-floor-applies decision back from CI (dev-config
+# docs/gates/test-suite.md carries the argument). The object form's keys are
+# plural (`lines`/`functions`); a singular key is accepted silently and gates
+# nothing.
+coverageThreshold = { lines = 0.75, functions = 0.75 }
+coverageSkipTestFiles = true
+# A drizzle schema module is a declaration, not logic, and its
+# `.references(() => …)` thunks are resolved by drizzle-kit while generating
+# DDL — never at runtime. No amount of exercising the tables can execute them,
+# so leaving the file in would peg the function metric below any floor.
+coveragePathIgnorePatterns = ["**/schema.ts"]

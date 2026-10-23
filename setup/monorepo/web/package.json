@@ -1,0 +1,11 @@
+{
+  "name": "project-template-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "env -u PORT bunx --bun vite dev",
+    "build": "vite build",
+    "start": "HOST=${HOST:-127.0.0.1} bun .output/server/index.mjs",
+    "typecheck": "tsc --noEmit"
+  }
+}

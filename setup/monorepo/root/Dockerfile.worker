@@ -1,0 +1,18 @@
+# The app is built INSIDE this image: `docker compose up -d` without a rebuild
+# deploys nothing. Pinned by `bun run setup` to the Bun that produced bun.lock.
+ARG BUN_VERSION=latest
+
+FROM oven/bun:${BUN_VERSION} AS deps
+WORKDIR /app
+COPY package.json bun.lock bunfig.toml ./
+COPY apps/api/package.json apps/api/
+COPY apps/web/package.json apps/web/
+COPY apps/worker/package.json apps/worker/
+RUN bun install --frozen-lockfile
+COPY . .
+
+FROM deps AS runtime
+RUN rm -rf apps/web
+ENV NODE_ENV=production
+USER bun
+CMD ["bun", "run", "--cwd", "apps/worker", "start"]

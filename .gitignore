@@ -1,0 +1,34 @@
+node_modules
+.output
+.turbo
+.nitro
+.tanstack
+dist
+coverage
+*.tsbuildinfo
+
+# TanStack Router generates this on every build; committing it means resolving
+# conflicts in a file nobody edits.
+**/routeTree.gen.ts
+
+# Secrets: the plaintext .env never leaves the box, .env.enc is the committed
+# age-encrypted copy, .env.example is the checked-in shape.
+.env
+.env.*
+!.env.example
+!.env.enc
+
+# The origins and ports scripts/preview.sh derives for the preview stack: a file
+# of deploy.env's shape, written per run rather than kept. deploy.env itself is
+# committed — it holds public names and no secret.
+preview.env
+
+# One drill at a time per stack: a lock file beside the checkout, because that
+# is the one path a unit, a sudo shell and a login shell all resolve alike.
+.restore-drill.*.lock
+
+backups/
+# What scripts/preview-capacity.sh writes down: a measurement of this box, not
+# of the repo.
+capacity/
+.DS_Store

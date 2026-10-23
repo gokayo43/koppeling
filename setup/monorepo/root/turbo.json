@@ -1,0 +1,39 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalDependencies": ["tsconfig.json"],
+  "tasks": {
+    "transit": {
+      "dependsOn": ["^transit"]
+    },
+    "build": {
+      "dependsOn": ["^build", "transit"],
+      "outputs": [".output/**", "src/routeTree.gen.ts"],
+      "env": ["SENTRY_AUTH_TOKEN", "SENTRY_ORG", "SENTRY_PROJECT"]
+    },
+    "typecheck": {
+      "dependsOn": ["transit"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": [
+        "BETTER_AUTH_SECRET",
+        "DATABASE_URL",
+        "DEV_PORT",
+        "HOST",
+        "PORT",
+        "PUBLIC_API_URL",
+        "REDIS_URL",
+        "ROUTE_LOG",
+        "SENTRY_AUTH_TOKEN",
+        "SENTRY_DSN",
+        "SENTRY_ORG",
+        "SENTRY_PROJECT",
+        "SITE_URL"
+      ]
+    },
+    "//#typecheck:root": {
+      "inputs": ["knip.ts", "scripts/**", "tsconfig.json", "package.json"]
+    }
+  }
+}

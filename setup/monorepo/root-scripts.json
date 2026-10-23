@@ -1,0 +1,9 @@
+{
+  "dev": "bun scripts/worktree.ts --provision --ports turbo run dev",
+  "build": "turbo run build",
+  "typecheck": "turbo run typecheck typecheck:root",
+  "typecheck:root": "tsc --noEmit",
+  "db:generate": "bun run --cwd apps/api db:generate",
+  "db:migrate": "bun scripts/worktree.ts --provision bun run --cwd apps/api db:migrate",
+  "start": "bun run --cwd apps/web start"
+}

@@ -1,0 +1,100 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "extends": ["./node_modules/@gokayo43/dev-config/oxlint.base.json"],
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "jsPlugins": ["eslint-plugin-boundaries"],
+  "settings": {
+    "import/resolver": {
+      "typescript": {
+        "project": "./apps/*/tsconfig.json",
+        "noWarnOnMultipleProjects": true
+      }
+    },
+    "boundaries/flag-as-external": {
+      "customSourcePatterns": ["**/*.css?url"]
+    },
+    "boundaries/elements": [
+      {
+        "type": "web",
+        "pattern": "apps/web/src"
+      },
+      {
+        "type": "api",
+        "pattern": "apps/api/src"
+      },
+      {
+        "type": "worker",
+        "pattern": "apps/worker/src"
+      },
+      {
+        "type": "scripts",
+        "pattern": "scripts"
+      }
+    ]
+  },
+  "rules": {
+    "boundaries/no-unknown-dependencies": "error",
+    "boundaries/dependencies": [
+      "error",
+      {
+        "default": "allow",
+        "policies": [
+          {
+            "from": {
+              "element": {
+                "type": "web"
+              }
+            },
+            "disallow": [
+              {
+                "to": {
+                  "element": {
+                    "type": "worker"
+                  }
+                }
+              }
+            ],
+            "message": "the web app talks to the api over Eden, never into worker internals"
+          },
+          {
+            "from": {
+              "element": {
+                "type": "api"
+              }
+            },
+            "disallow": [
+              {
+                "to": {
+                  "element": {
+                    "type": "web"
+                  }
+                }
+              },
+              {
+                "to": {
+                  "element": {
+                    "type": "worker"
+                  }
+                }
+              }
+            ],
+            "message": "the api program owns the domain — it must not depend on its consumers"
+          }
+        ]
+      }
+    ]
+  },
+  "ignorePatterns": [
+    "node_modules/**",
+    "**/.output/**",
+    "**/.nitro/**",
+    "**/.tanstack/**",
+    "**/dist/**",
+    "**/drizzle/**",
+    "**/routeTree.gen.ts"
+  ]
+}
