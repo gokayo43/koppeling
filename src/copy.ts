@@ -61,4 +61,6 @@ export const copy = {
   noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",
   badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
   keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw.",
+  personUnreachable:
+    "De inlog is gecontroleerd, maar wie je bent kan nu niet worden opgezocht. Probeer het later opnieuw.",
 } as const;

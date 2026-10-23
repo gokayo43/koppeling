@@ -2,6 +2,7 @@ import { expect, setSystemTime, test } from "bun:test";
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
+import { copy } from "../src/copy";
 import { fromTrpcRouter, koppeling, type ActorDecision } from "../src/index";
 import { warehouseAdmin } from "./fixtures/doors";
 import { contextFor, glossary, warehouseRouter, type WarehouseActor } from "./fixtures/warehouse";
@@ -169,6 +170,25 @@ test("an actor the host refuses answers 403 with the host's sentence", async () 
   expect(response.status).toBe(403);
   expect(await response.json()).toEqual({ error: "Je hebt geen toegang tot het magazijn." });
   expect(invoked).toEqual([]);
+});
+
+test("an actorFor that rejects answers 503 with the door's sentence, not the host's error", async () => {
+  using idp = await identityProvider();
+  const door = koppeling({
+    catalogue: fromTrpcRouter(warehouseRouter(), { contextFor }),
+    glossary,
+    resource: { url: RESOURCE, scopes: [] },
+    identity: { issuer: ISSUER, jwksUrl: JWKS_URL, authorizationServer: ISSUER },
+    actorFor: async () => {
+      throw new Error("connect ECONNREFUSED 10.8.0.1:3306");
+    },
+  });
+  const response = await door.handle(mcpPost(await idp.token()));
+  const body = await response.text();
+
+  expect(response.status).toBe(503);
+  expect(body).toBe(JSON.stringify({ error: copy.personUnreachable }));
+  expect(body).not.toContain("ECONNREFUSED");
 });
 
 test("a key set the door cannot fetch answers 503, not 401", async () => {

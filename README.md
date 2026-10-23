@@ -140,12 +140,11 @@ cool-down), and checks `iss` against `identity.issuer`, `aud` against
 | A bearer that does not verify            | 401, the same header with `error="invalid_token"`                  |
 | The provider's key set cannot be fetched | 503                                                                |
 | `actorFor` answers `{ refusal }`         | 403, `{ "error": "<refusal>" }`                                    |
+| `actorFor` throws or rejects             | 503, the door's own sentence; the error is logged                  |
 
 The metadata document names the resource, the authorization server, the
 scopes and `bearer_methods_supported: ["header"]`. The door checks no scope
-itself: `actorFor` receives the claims, `scope` among them, and decides. A throw
-from `actorFor` rejects `handle`'s promise, for the host's framework to answer
-as its own failure.
+itself: `actorFor` receives the claims, `scope` among them, and decides.
 
 ## Protocol
 

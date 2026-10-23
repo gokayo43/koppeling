@@ -47,7 +47,8 @@ const copy = {
 	missingPathParameter: (name) => `De invoer mist params.${name}, dat in het pad staat.`,
 	noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",
 	badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
-	keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw."
+	keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw.",
+	personUnreachable: "De inlog is gecontroleerd, maar wie je bent kan nu niet worden opgezocht. Probeer het later opnieuw."
 };
 //#endregion
 //#region src/catalogue.ts
@@ -819,6 +820,8 @@ function mcpServer(directory, instructions, actor) {
 //#endregion
 //#region src/door.ts
 var Refused = class extends Data.TaggedError("Refused") {};
+/** The host's `actorFor` failed: the token verified, but its person could not be looked up. */
+var PersonUnreachable = class extends Data.TaggedError("PersonUnreachable") {};
 const refusalResponse = (status, sentence, headers = {}) => Response.json({ error: sentence }, {
 	status,
 	headers
@@ -867,9 +870,13 @@ function koppeling(options) {
 	const handle = (request) => request.method !== "POST" ? Promise.resolve(new Response(null, {
 		status: 405,
 		headers: { Allow: "POST" }
-	})) : Effect.runPromise(verify(request).pipe(Effect.flatMap((claims) => Effect.promise(async () => options.actorFor(claims))), Effect.flatMap((decision) => "refusal" in decision ? Effect.fail(new Refused({ sentence: decision.refusal })) : Effect.promise(() => serve(request, decision.actor))), Effect.catchTags({
+	})) : Effect.runPromise(verify(request).pipe(Effect.flatMap((claims) => Effect.tryPromise({
+		try: async () => options.actorFor(claims),
+		catch: (cause) => new PersonUnreachable({ cause })
+	})), Effect.flatMap((decision) => "refusal" in decision ? Effect.fail(new Refused({ sentence: decision.refusal })) : Effect.promise(() => serve(request, decision.actor))), Effect.catchTags({
 		Unauthenticated: ({ sentence, tokenGiven }) => Effect.succeed(refusalResponse(401, sentence, { "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}"${tokenGiven ? ", error=\"invalid_token\"" : ""}` })),
 		Refused: ({ sentence }) => Effect.succeed(refusalResponse(403, sentence)),
+		PersonUnreachable: ({ cause }) => Effect.logError("The host's actorFor failed", Cause.die(cause)).pipe(Effect.as(refusalResponse(503, copy.personUnreachable))),
 		KeysUnreachable: ({ cause }) => Effect.logError("The identity provider's key set could not be read", Cause.die(cause)).pipe(Effect.as(refusalResponse(503, copy.keysUnreachable)))
 	})));
 	const metadata = (request) => request.method === "GET" || request.method === "HEAD" ? Response.json(document) : new Response(null, {

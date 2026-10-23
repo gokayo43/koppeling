@@ -45,6 +45,11 @@ export interface Koppeling {
 
 class Refused extends Data.TaggedError("Refused")<{ readonly sentence: string }> {}
 
+/** The host's `actorFor` failed: the token verified, but its person could not be looked up. */
+class PersonUnreachable extends Data.TaggedError("PersonUnreachable")<{
+  readonly cause: unknown;
+}> {}
+
 const refusalResponse = (
   status: number,
   sentence: string,
@@ -100,7 +105,12 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
       ? Promise.resolve(new Response(null, { status: 405, headers: { Allow: "POST" } }))
       : Effect.runPromise(
           verify(request).pipe(
-            Effect.flatMap((claims) => Effect.promise(async () => options.actorFor(claims))),
+            Effect.flatMap((claims) =>
+              Effect.tryPromise({
+                try: async () => options.actorFor(claims),
+                catch: (cause) => new PersonUnreachable({ cause }),
+              }),
+            ),
             Effect.flatMap((decision) =>
               "refusal" in decision
                 ? Effect.fail(new Refused({ sentence: decision.refusal }))
@@ -114,6 +124,10 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
                   }),
                 ),
               Refused: ({ sentence }) => Effect.succeed(refusalResponse(403, sentence)),
+              PersonUnreachable: ({ cause }) =>
+                Effect.logError("The host's actorFor failed", Cause.die(cause)).pipe(
+                  Effect.as(refusalResponse(503, copy.personUnreachable)),
+                ),
               KeysUnreachable: ({ cause }) =>
                 Effect.logError(
                   "The identity provider's key set could not be read",
