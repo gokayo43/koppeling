@@ -1,3 +1,11 @@
-# gitleaks' default rules, unchanged.
+# Extends gitleaks' default rules; the allowlist below is the only deviation.
 [extend]
 useDefault = true
+
+# The repository began as a copy of gokayo43/project-template, whose first
+# commit carries test files with a deliberately fake BETTER_AUTH_SECRET whose
+# name says what it is. Those files are gone from the tree, but CI scans the
+# whole history, which keeps that commit, so a line-level gitleaks:allow cannot
+# reach it; this repo-level allowlist can.
+[allowlist]
+regexes = ['''probe-secret-that-is-long-enough''']
