@@ -24,3 +24,10 @@ jobs:
       # The package has no runtime environment: nothing here reads a variable,
       # so there is no .env for the contract's secrets rules to be about.
       contract-exemptions: secrets
+      # The suite reaches nothing beyond loopback (its tests serve the identity
+      # provider's key set themselves). It runs unsealed because the seal needs
+      # passwordless sudo, which the fleet's self-hosted runners refuse by
+      # decision since 2026-10-19 (the server's CLAUDE.md, wall 4).
+      test-network: >-
+        the suite reaches nothing beyond loopback; the seal needs passwordless
+        sudo, which the fleet's self-hosted runners refuse by decision
