@@ -469,3 +469,24 @@ test("an output is described as what the procedure answers, its schema's output 
     reason: "output: Transforms cannot be represented in JSON Schema",
   });
 });
+
+test("an input issue without a message, which Standard Schema forbids, fails the call loudly instead of refusing with nothing", async () => {
+  // The likeliest wrong answers an empty sentence, which tells the agent nothing.
+  const silent = {
+    "~standard": {
+      version: 1,
+      vendor: "test",
+      validate: () => ({ issues: [{ path: ["sku"] }] }),
+      jsonSchema: { input: () => ({ type: "object" }), output: () => ({ type: "object" }) },
+    },
+  };
+  const router = t.router({ count: t.procedure.input(Object(silent)).mutation(() => 1) });
+  const [count] = fromTrpcRouter(router, { contextFor: () => ({}) }).operations;
+
+  const thrown = await count?.run(null, { sku: "S" }, unaborted).then(
+    () => "resolved",
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever the run rejected with
+    (error: unknown) => String(error),
+  );
+  expect(thrown).toContain('tRPC procedure "count": an input issue without a message');
+});

@@ -18512,11 +18512,15 @@ function fromTrpcRouter(router, options) {
 	*/
 	const run = async (actor, path, parsers, input, signal) => {
 		const issues = await inputIssues(parsers, input);
-		const message = issues[0]?.["message"];
-		if (issues.length > 0) return {
-			refusal: typeof message === "string" ? message : "",
-			details: { issues }
-		};
+		const [first] = issues;
+		if (first !== void 0) {
+			const message = first["message"];
+			if (issues.some((issue) => typeof issue["message"] !== "string") || typeof message !== "string") throw new Error(`tRPC procedure "${path}": an input issue without a message, which Standard Schema requires of every issue`);
+			return {
+				refusal: message,
+				details: { issues }
+			};
+		}
 		let target = router.createCaller(await options.contextFor(actor), { signal });
 		for (const segment of path.split(".")) target = Object(target)[segment];
 		if (typeof target !== "function") throw new Error(`The tRPC caller has no procedure at "${path}"`);
@@ -18615,7 +18619,10 @@ function isRefusal(error) {
 * This runs before the procedure's own chain, its authorization included, on
 * purpose: every caller already holds a token for this door, and `describe`
 * shows that same input schema to every such caller, so the issues reveal
-* nothing the schema does not.
+* nothing the schema does not. That holds for a schema whose checks read only
+* the input; a check that reads data (an async `refine` that queries a
+* database) runs here before the program's authorization, and what its issue
+* says reaches a caller the program would have refused.
 */
 async function inputIssues(parsers, input) {
 	const issues = [];
