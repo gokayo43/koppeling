@@ -72,16 +72,17 @@ export function call<Actor>(
   const operation = session.directory.byName.get(name);
   if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
   if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
+  const write = operation.kind === "write";
   const strays = strayKeys(operation.input, input);
   if (strays.length) {
-    return Effect.succeed(
-      refusal(
-        copy.strayKeys(strays),
-        strays.map(({ at, unknown, allowed }) => ({ at, unknown, allowed })),
-      ),
+    const refused = refusal(
+      copy.strayKeys(strays),
+      strays.map(({ at, unknown, allowed }) => ({ at, unknown, allowed })),
     );
+    return write
+      ? session.report(writeEvent(name, session.claims, "failure")).pipe(Effect.as(refused))
+      : Effect.succeed(refused);
   }
-  const write = operation.kind === "write";
   const failed = (cause: unknown, reached: boolean) =>
     session
       .report({ kind: "failure", operation: name, cause })

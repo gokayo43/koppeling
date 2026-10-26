@@ -267,6 +267,28 @@ test("a misnamed field is refused before the program runs, naming the unknown ke
   expect(door.invoked).toEqual(["orders.list"]);
 });
 
+test("a write refused for a stray key still leaves its one write event, as a failure", async () => {
+  // Every write leaves one event; the refusal before the program ran left none.
+  await using door = await warehouse();
+  const refused = await door.client.callTool({
+    name: "write",
+    arguments: { name: "suppliers.delete", input: { supplierID: 1 } },
+  });
+
+  expect(refused.isError).toBe(true);
+  expect(door.invoked).toEqual([]);
+  expect(door.events).toEqual([
+    {
+      kind: "write",
+      operation: "suppliers.delete",
+      sub: "person-1",
+      name: "Beheerder Een",
+      via: "Claude",
+      outcome: "failure",
+    },
+  ]);
+});
+
 test("a misnamed query field on an Elysia route is refused at its part, and a correct one passes", async () => {
   const invoked: string[] = [];
   await using door = await connected(

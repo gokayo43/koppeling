@@ -18978,13 +18978,16 @@ function call(session, tool, name, input, vervolg) {
 	const operation = session.directory.byName.get(name);
 	if (operation === void 0) return succeed$1(unknownOperation(session.directory, name));
 	if (operation.kind !== tool) return succeed$1(refusal(copy$2.wrongTool(name, operation.kind)));
-	const strays = strayKeys(operation.input, input);
-	if (strays.length) return succeed$1(refusal(copy$2.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
-		at,
-		unknown,
-		allowed
-	}))));
 	const write = operation.kind === "write";
+	const strays = strayKeys(operation.input, input);
+	if (strays.length) {
+		const refused = refusal(copy$2.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
+			at,
+			unknown,
+			allowed
+		})));
+		return write ? session.report(writeEvent(name, session.claims, "failure")).pipe(as(refused)) : succeed$1(refused);
+	}
 	const failed = (cause, reached) => session.report({
 		kind: "failure",
 		operation: name,
