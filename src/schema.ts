@@ -51,7 +51,11 @@ export function describeSchema(
   }
   if (!isJsonObject(converted))
     return { undescribable: `it converts to ${JSON.stringify(converted)}` };
-  return { schema: converted };
+  // The dialect a converter names (Effect 3 writes draft-07) goes: the door
+  // shows every schema as 2020-12, the dialect MCP reads, whose
+  // unevaluatedProperties closing writes.
+  const { $schema: _dialect, ...shown } = converted;
+  return { schema: shown };
 }
 
 /** The schema in JSON Schema, or `undefined` when it is in no language the door reads. */

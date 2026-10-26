@@ -17873,7 +17873,8 @@ function describeSchema(schema, owner, side) {
 	}
 	if (converted === void 0) throw new Error(`${owner}: its schema is not Effect Schema 3, TypeBox or a Standard JSON Schema (zod 4; Effect 4 through Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema))), so the koppeling cannot read it`);
 	if (!isJsonObject(converted)) return { undescribable: `it converts to ${JSON.stringify(converted)}` };
-	return { schema: converted };
+	const { $schema: _dialect, ...shown } = converted;
+	return { schema: shown };
 }
 /** The schema in JSON Schema, or `undefined` when it is in no language the door reads. */
 function convert(schema, side) {

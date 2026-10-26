@@ -490,3 +490,19 @@ test("an input issue without a message, which Standard Schema forbids, fails the
   );
   expect(thrown).toContain('tRPC procedure "count": an input issue without a message');
 });
+
+test("a shown schema names no dialect of its own, since closing writes 2020-12's unevaluatedProperties", () => {
+  // Effect 3 writes draft-07's $schema, where unevaluatedProperties means
+  // nothing; MCP reads a tool's schema as 2020-12 by default.
+  const router = t.router({
+    effect: t.procedure
+      .input(Schema.standardSchemaV1(Schema.Struct({ a: Schema.String })))
+      .input(Schema.standardSchemaV1(Schema.Struct({ b: Schema.String })))
+      .output(Schema.standardSchemaV1(Schema.Struct({ c: Schema.String })))
+      .query(() => ({ c: "c" })),
+    zod: t.procedure.input(z.object({ a: z.string() })).query(() => 1),
+  });
+  for (const operation of fromTrpcRouter(router, { contextFor: () => ({}) }).operations) {
+    expect(JSON.stringify([operation.input, operation.output])).not.toContain("$schema");
+  }
+});
