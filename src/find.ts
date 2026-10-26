@@ -32,6 +32,14 @@ const WEIGHTS = { name: 3, description: 2, area: 2, input: 1 } as const;
 type Field = keyof typeof WEIGHTS;
 const FIELDS: readonly Field[] = ["name", "description", "area", "input"];
 
+/**
+ * What each word counts once more when the words name an area or a leaf of two
+ * or more words whole: a phrase that names a thing outweighs the same words
+ * met one by one across other names. A one-word name gets nothing extra, since
+ * its one word already counted.
+ */
+const WHOLE_WEIGHT = WEIGHTS.name;
+
 /** The shortest stem a prefix match may take, so "in" does not match "inventory". */
 const MIN_PREFIX = 4;
 
@@ -137,15 +145,33 @@ function fieldNames(schema: JsonSchema, depth = 0): string[] {
 }
 
 /**
+ * The asked words that name an operation's area or its leaf whole, each of
+ * two or more words that were all asked: "product categories list" names the
+ * area "product-categories" whole, while it only shares "categories" with
+ * "admin.products.categories.get".
+ */
+function namedWhole(own: Words, asked: ReadonlySet<string>): Set<string> {
+  const named = new Set<string>();
+  for (const words of [own.area, own.name]) {
+    if (words.length > 1 && words.every((word) => asked.has(word))) {
+      for (const word of words) named.add(word);
+    }
+  }
+  return named;
+}
+
+/**
  * The operations whose words best meet `words`, best first, at most
  * {@link FIND_LIMIT}, and none that meets none of them. A word counts in each
  * field it meets, by that field's weight and by how rare its match is among the
- * operations, so a word every operation carries ranks nothing.
+ * operations, so a word every operation carries ranks nothing; and once more
+ * where it helps name an area or a leaf whole.
  */
 export function find<Actor>(index: SearchIndex<Actor>, words: string): Operation<Actor>[] {
   const query = [...new Set(stems(words))];
   const rarity = (word: string) =>
     Math.log(1 + index.entries.length / Math.max(index.carrying.get(word) ?? 0, 1));
+  const asked = new Set(query);
   const scored = index.entries.map(({ operation, words: own }) => {
     let score = 0;
     for (const word of query) {
@@ -157,6 +183,7 @@ export function find<Actor>(index: SearchIndex<Actor>, words: string): Operation
         score += best;
       }
     }
+    for (const word of namedWhole(own, asked)) score += WHOLE_WEIGHT * rarity(word);
     return { operation, score };
   });
   return scored

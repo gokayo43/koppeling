@@ -682,6 +682,13 @@ const FIELDS = [
 	"area",
 	"input"
 ];
+/**
+* What each word counts once more when the words name an area or a leaf of two
+* or more words whole: a phrase that names a thing outweighs the same words
+* met one by one across other names. A one-word name gets nothing extra, since
+* its one word already counted.
+*/
+const WHOLE_WEIGHT = WEIGHTS.name;
 /** The shortest stem a prefix match may take, so "in" does not match "inventory". */
 const MIN_PREFIX = 4;
 /** The shortest shared start that makes two words cousins. */
@@ -766,14 +773,27 @@ function fieldNames(schema, depth = 0) {
 	];
 }
 /**
+* The asked words that name an operation's area or its leaf whole, each of
+* two or more words that were all asked: "product categories list" names the
+* area "product-categories" whole, while it only shares "categories" with
+* "admin.products.categories.get".
+*/
+function namedWhole(own, asked) {
+	const named = /* @__PURE__ */ new Set();
+	for (const words of [own.area, own.name]) if (words.length > 1 && words.every((word) => asked.has(word))) for (const word of words) named.add(word);
+	return named;
+}
+/**
 * The operations whose words best meet `words`, best first, at most
 * {@link FIND_LIMIT}, and none that meets none of them. A word counts in each
 * field it meets, by that field's weight and by how rare its match is among the
-* operations, so a word every operation carries ranks nothing.
+* operations, so a word every operation carries ranks nothing; and once more
+* where it helps name an area or a leaf whole.
 */
 function find(index, words) {
 	const query = [...new Set(stems(words))];
 	const rarity = (word) => Math.log(1 + index.entries.length / Math.max(index.carrying.get(word) ?? 0, 1));
+	const asked = new Set(query);
 	return index.entries.map(({ operation, words: own }) => {
 		let score = 0;
 		for (const word of query) for (const field of FIELDS) {
@@ -781,6 +801,7 @@ function find(index, words) {
 			for (const candidate of own[field]) best = Math.max(best, WEIGHTS[field] * closeness(word, candidate) * rarity(candidate));
 			score += best;
 		}
+		for (const word of namedWhole(own, asked)) score += WHOLE_WEIGHT * rarity(word);
 		return {
 			operation,
 			score
