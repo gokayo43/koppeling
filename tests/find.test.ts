@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 
+import { toDirectory } from "../src/directory";
 import { find, FIND_LIMIT, stems } from "../src/find";
 import { sketched } from "./support/operations";
 
@@ -19,10 +20,14 @@ test("an operation the words describe outranks one whose name only shares a word
     },
   ]);
 
-  expect(names(find(operations, "stock tellen op plank"))).toEqual([
-    "counting.countRow",
-    "stock.adjust",
-  ]);
+  expect(
+    names(
+      find(
+        toDirectory({ operations, skipped: [], undescribed: [] }).search,
+        "stock tellen op plank",
+      ),
+    ),
+  ).toEqual(["counting.countRow", "stock.adjust"]);
 });
 
 test("Dutch inflections meet their stems, and camelCase names are words", () => {
@@ -39,8 +44,12 @@ test("a word in the input's fields counts, and a word no operation carries finds
     { name: "inventory.bySku", fields: ["sku"] },
   ]);
 
-  expect(names(find(operations, "sku"))).toEqual(["inventory.bySku"]);
-  expect(find(operations, "offerte")).toEqual([]);
+  expect(
+    names(find(toDirectory({ operations, skipped: [], undescribed: [] }).search, "sku")),
+  ).toEqual(["inventory.bySku"]);
+  expect(find(toDirectory({ operations, skipped: [], undescribed: [] }).search, "offerte")).toEqual(
+    [],
+  );
 });
 
 test("find answers at most ten, best first, ties in name order", () => {
@@ -50,7 +59,9 @@ test("find answers at most ten, best first, ties in name order", () => {
       description: "Print een label.",
     })),
   );
-  const found = names(find(operations, "label"));
+  const found = names(
+    find(toDirectory({ operations, skipped: [], undescribed: [] }).search, "label"),
+  );
 
   expect(found).toHaveLength(FIND_LIMIT);
   expect(found).toEqual(found.toSorted());

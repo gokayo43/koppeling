@@ -14,11 +14,17 @@ type JsonSchema = JsonObject;
 //#region src/catalogue.d.ts
 /** `read` changes nothing; `write` changes data, so the person is asked first. */
 type Kind = "read" | "write";
-/** What a program answered: its value, or its own refusal sentence. */
+/**
+ * What a program answered: its value, its own refusal sentence, or a failure
+ * after the program was reached, when whatever it was asked to change may have
+ * changed.
+ */
 type Outcome = {
   readonly value: Json;
 } | {
   readonly refusal: string;
+} | {
+  readonly failed: unknown;
 };
 /** One callable thing a program declares, as the door offers it. */
 interface Operation<Actor> {
@@ -30,11 +36,11 @@ interface Operation<Actor> {
   readonly input: JsonSchema;
   readonly output: JsonSchema | undefined;
   /**
-   * Runs the operation once, as `actor`, through the program's own code path.
-   * A refusal the program states is an outcome; anything thrown is a failure
-   * the program did not mean to show.
+   * Runs the operation once, as `actor`, through the program's own code path,
+   * giving up when `signal` aborts. A throw is a failure before the program
+   * was reached, so nothing changed.
    */
-  readonly run: (actor: Actor, input: Json | undefined) => Promise<Outcome>;
+  readonly run: (actor: Actor, input: Json | undefined, signal: AbortSignal) => Promise<Outcome>;
 }
 /** One operation the boot report names, and why. */
 interface Note {
@@ -52,6 +58,12 @@ interface Catalogue<Actor> {
 }
 //#endregion
 //#region src/adapters/elysia.d.ts
+declare module "elysia" {
+  interface DocumentDecoration {
+    /** `false` keeps this route from the koppeling: the door skips it and names it in its boot report. */
+    koppeling?: boolean;
+  }
+}
 interface ElysiaOptions<Actor> {
   /** The headers that make the app's own auth accept a request as `actor`. */
   readonly credential: (actor: Actor) => {
@@ -70,8 +82,9 @@ interface ElysiaOptions<Actor> {
  * The catalogue of an Elysia 1.4 app's routes under `mount`: each named by its
  * path's segments and its method, and run through `app.handle` with the
  * actor's credential, so the route's own auth and validation run as for any
- * client. WebSocket routes and the routes the program hides from its own
- * documentation (`detail.hide`) are skipped and named in the boot report.
+ * client. WebSocket routes, the routes the program withholds from the door
+ * (`detail.koppeling: false`) and those it hides from its own documentation
+ * (`detail.hide`) are skipped and named in the boot report.
  */
 export declare function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>): Catalogue<Actor>;
 //#endregion
@@ -82,7 +95,8 @@ interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
 }
 /**
  * The catalogue of a tRPC v11 router: every query and mutation, named by its
- * path. Subscriptions are skipped and named in the boot report.
+ * path. Subscriptions and the procedures the program withholds from the door
+ * (`meta.koppeling: false`) are skipped and named in the boot report.
  */
 export declare function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(router: Router, options: TrpcOptions<Router, Actor>): Catalogue<Actor>;
 //#endregion
@@ -100,6 +114,32 @@ interface Identity {
   /** The authorization server the metadata document sends a client to for its sign-in. */
   readonly authorizationServer: string;
 }
+//#endregion
+//#region src/events.d.ts
+/**
+ * What a write came to: the program's value, its refusal, a failure before the
+ * program was reached (nothing changed), or `unknown`: the program was reached
+ * and its answer was lost or late, so the change may have been made.
+ */
+type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
+/**
+ * What the door tells the host's logger. `write`: one per call of a write
+ * operation, naming the person and the program acting for them. `failure`: a
+ * failure the person was answered with the door's own sentence for; its
+ * `operation` is null when the sign-in failed (the key set, or `actorFor`).
+ */
+type KoppelingEvent = {
+  readonly kind: "write";
+  readonly operation: string;
+  readonly sub: string | null;
+  readonly name: string | null;
+  readonly via: string | null;
+  readonly outcome: WriteOutcome;
+} | {
+  readonly kind: "failure";
+  readonly operation: string | null;
+  readonly cause: unknown;
+};
 //#endregion
 //#region src/door.d.ts
 /** Who a token's person is to the program, or the program's sentence for why they may not come in. */
@@ -119,6 +159,8 @@ interface KoppelingOptions<Actor> {
   };
   readonly identity: Identity;
   readonly actorFor: (claims: JWTPayload) => ActorDecision<Actor> | Promise<ActorDecision<Actor>>;
+  /** The host's logger for every write and every failure; Effect's own logger when absent. */
+  readonly log?: (event: KoppelingEvent) => void;
 }
 interface BootReport {
   /** How many operations each area offers. */
@@ -137,8 +179,21 @@ interface Koppeling {
 }
 /**
  * The door: an MCP server over Streamable HTTP, stateless, that offers the
- * catalogue through four tools to whoever the bearer token names.
+ * catalogue through five tools to whoever the bearer token names.
  */
 export declare function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling;
 //#endregion
-export type { ActorDecision, BootReport, Catalogue, ElysiaOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingOptions, Note, Operation, Outcome, TrpcOptions };
+//#region src/glossary.d.ts
+interface GlossaryOptions {
+  /** The most characters the glossary may take, the closing line included. */
+  readonly limit: number;
+}
+/**
+ * A program's glossary (its CONTEXT.md) as the door's opening words: one line
+ * per `##` section, its heading, the first sentence of its own text where it
+ * has one, and the names of its `###` terms. Lines are kept in order while
+ * they fit within `limit`; a closing line names the sections left out.
+ */
+export declare function glossaryFrom(markdown: string, options: GlossaryOptions): string;
+//#endregion
+export type { ActorDecision, BootReport, Catalogue, ElysiaOptions, GlossaryOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingEvent, KoppelingOptions, Note, Operation, Outcome, TrpcOptions, WriteOutcome };

@@ -87,16 +87,37 @@ function closeness(query: string, word: string): number {
   return shared >= COGNATE_PREFIX && shared >= short.length * 0.7 ? 0.4 : 0;
 }
 
-type Index = { readonly [F in Field]: readonly string[] };
+type Words = { readonly [F in Field]: readonly string[] };
 
-function indexOf(operation: Operation<never>): Index {
-  const leaf = operation.name.slice(operation.area.length);
-  return {
-    name: stems(leaf),
-    area: stems(operation.area),
-    description: stems(operation.description ?? ""),
-    input: stems(fieldNames(operation.input).join(" ")),
-  };
+/**
+ * A catalogue's operations as `find` searches them, built once: each
+ * operation's words per field, and how many operations carry each word.
+ */
+export interface SearchIndex<Actor> {
+  readonly entries: readonly { readonly operation: Operation<Actor>; readonly words: Words }[];
+  readonly carrying: ReadonlyMap<string, number>;
+}
+
+/** The index of `operations`, each searched by its name without its area (`leaf`). */
+export function searchIndex<Actor>(
+  operations: readonly { readonly operation: Operation<Actor>; readonly leaf: string }[],
+): SearchIndex<Actor> {
+  const entries = operations.map(({ operation, leaf }) => ({
+    operation,
+    words: {
+      name: stems(leaf),
+      area: stems(operation.area),
+      description: stems(operation.description ?? ""),
+      input: stems(fieldNames(operation.input).join(" ")),
+    },
+  }));
+  const carrying = new Map<string, number>();
+  for (const { words } of entries) {
+    for (const word of new Set(FIELDS.flatMap((field) => words[field]))) {
+      carrying.set(word, (carrying.get(word) ?? 0) + 1);
+    }
+  }
+  return { entries, carrying };
 }
 
 /** The property names of a schema, two levels deep, through allOf and anyOf. */
@@ -121,29 +142,16 @@ function fieldNames(schema: JsonSchema, depth = 0): string[] {
  * field it meets, by that field's weight and by how rare its match is among the
  * operations, so a word every operation carries ranks nothing.
  */
-export function find<Actor>(
-  operations: readonly Operation<Actor>[],
-  words: string,
-): Operation<Actor>[] {
+export function find<Actor>(index: SearchIndex<Actor>, words: string): Operation<Actor>[] {
   const query = [...new Set(stems(words))];
-  const indexed = operations.map((operation) => ({ operation, index: indexOf(operation) }));
-  const rarities = new Map<string, number>();
-  const rarity = (word: string) => {
-    const known = rarities.get(word);
-    if (known !== undefined) return known;
-    const carrying = indexed.filter(({ index }) =>
-      FIELDS.some((field) => index[field].includes(word)),
-    ).length;
-    const computed = Math.log(1 + operations.length / Math.max(carrying, 1));
-    rarities.set(word, computed);
-    return computed;
-  };
-  const scored = indexed.map(({ operation, index }) => {
+  const rarity = (word: string) =>
+    Math.log(1 + index.entries.length / Math.max(index.carrying.get(word) ?? 0, 1));
+  const scored = index.entries.map(({ operation, words: own }) => {
     let score = 0;
     for (const word of query) {
       for (const field of FIELDS) {
         let best = 0;
-        for (const candidate of index[field]) {
+        for (const candidate of own[field]) {
           best = Math.max(best, WEIGHTS[field] * closeness(word, candidate) * rarity(candidate));
         }
         score += best;

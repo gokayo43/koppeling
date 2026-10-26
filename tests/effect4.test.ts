@@ -5,6 +5,9 @@ import { Schema } from "effect4";
 
 import { fromTrpcRouter } from "../src/index";
 
+/** A signal no case aborts, for a run the case lets finish. */
+const unaborted = new AbortController().signal;
+
 const t = initTRPC.context<object>().create();
 
 const router = t.router({
@@ -32,12 +35,12 @@ test("an Effect 4 input handed over as a Standard JSON Schema is described, and 
     required: ["code", "toShelf", "quantity"],
     properties: { code: { type: "string" }, quantity: { type: "integer" } },
   });
-  expect(await move?.run(null, { code: "SKU-1", toShelf: "B1", quantity: 2 })).toEqual({
+  expect(await move?.run(null, { code: "SKU-1", toShelf: "B1", quantity: 2 }, unaborted)).toEqual({
     value: { code: "SKU-1", toShelf: "B1", quantity: 2 },
   });
-  expect(await move?.run(null, { code: "SKU-1", toShelf: "B1", quantity: "twee" })).toHaveProperty(
-    "refusal",
-  );
+  expect(
+    await move?.run(null, { code: "SKU-1", toShelf: "B1", quantity: "twee" }, unaborted),
+  ).toHaveProperty("refusal");
 });
 
 test("an Effect 4 input handed over as a Standard Schema alone fails the boot, saying what to hand over", () => {

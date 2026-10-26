@@ -16,7 +16,10 @@ import { z } from "zod";
 import { fromTrpcRouter } from "../src/index";
 import { contextFor, warehouseRouter } from "./fixtures/warehouse";
 
-const t = initTRPC.context<object>().meta<{ description?: string }>().create();
+/** A signal no case aborts, for a run the case lets finish. */
+const unaborted = new AbortController().signal;
+
+const t = initTRPC.context<object>().meta<{ description?: string; koppeling?: boolean }>().create();
 const MCP_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 
 type Kind = "query" | "mutation" | "subscription";
@@ -182,6 +185,21 @@ test("a router with lazy sub-routers fails the boot rather than offering part of
   expect(() => fromTrpcRouter(lazyRouter, { contextFor: () => ({}) })).toThrow("lazy");
 });
 
+test("a procedure the program withholds from the door is skipped and named", () => {
+  const router = t.router({
+    users: t.router({
+      getWithPin: t.procedure.meta({ koppeling: false }).query(() => "0000"),
+      list: t.procedure.query(() => []),
+    }),
+  });
+  const derived = fromTrpcRouter(router, { contextFor: () => ({}) });
+
+  expect(derived.operations.map(({ name }) => name)).toEqual(["users.list"]);
+  expect(derived.skipped).toEqual([
+    { name: "users.getWithPin", reason: "withheld by the program" },
+  ]);
+});
+
 test("a name outside MCP's characters fails the boot", () => {
   expect(() =>
     fromTrpcRouter(t.router({ "zet op": t.procedure.query(() => 1) }), { contextFor: () => ({}) }),
@@ -202,6 +220,6 @@ test("the router's own middleware chain runs for a call, with the context contex
     contextFor: (actor: { readonly id: number }) => ({ person: actor.id }),
   }).operations;
 
-  expect(await whoami?.run({ id: 7 }, undefined)).toEqual({ value: { person: 7 } });
+  expect(await whoami?.run({ id: 7 }, undefined, unaborted)).toEqual({ value: { person: 7 } });
   expect(seen).toEqual([{ person: 7 }]);
 });

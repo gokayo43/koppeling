@@ -3,7 +3,7 @@ import { expect, setSystemTime, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 import { copy } from "../src/copy";
-import { fromTrpcRouter, koppeling, type ActorDecision } from "../src/index";
+import { fromTrpcRouter, koppeling, type ActorDecision, type KoppelingEvent } from "../src/index";
 import { warehouseAdmin } from "./fixtures/doors";
 import { contextFor, glossary, warehouseRouter, type WarehouseActor } from "./fixtures/warehouse";
 import { identityProvider, ISSUER, JWKS_URL, RESOURCE } from "./support/identity";
@@ -75,7 +75,7 @@ for (const era of ["legacy", "modern"] as const) {
 
     expect(client.getInstructions()).toStartWith(glossary);
     const result = await client.callTool({
-      name: "call",
+      name: "read",
       arguments: { name: "inventory.bySku", input: { sku: "SKU-1" } },
     });
 
@@ -141,9 +141,12 @@ test("an unknown key id fetches the key set once more, and then verifies", async
     expect(idp.served.count).toBe(1);
 
     await idp.rotate("second");
-    // Past jose's cool-down on refetching a key set, which bounds how often an
-    // unknown key id can make the door ask the provider.
-    setSystemTime(new Date(start + 31_000));
+    // A token with the new key within the refetch cool-down is refused
+    // without a fetch; past it (5 s) the door fetches once and verifies.
+    setSystemTime(new Date(start + 1_000));
+    expect((await door.handle(mcpPost(await idp.token({}, { kid: "second" })))).status).toBe(401);
+    expect(idp.served.count).toBe(1);
+    setSystemTime(new Date(start + 6_000));
     expect(await door.handle(mcpPost(await idp.token({}, { kid: "second" })))).toHaveProperty(
       "status",
       200,
@@ -160,16 +163,108 @@ test("an unknown key id fetches the key set once more, and then verifies", async
   }
 });
 
-test("an actor the host refuses answers 403 with the host's sentence", async () => {
+test("a person the host refuses is served MCP that says why, in its instructions and every tool", async () => {
   using idp = await identityProvider();
-  const { door, invoked } = warehouseDoor(() => ({
-    refusal: "Je hebt geen toegang tot het magazijn.",
-  }));
-  const response = await door.handle(mcpPost(await idp.token()));
+  const sentence = "Koppel eerst je magazijnaccount: plak dit nummer bij je profiel.";
+  const { door, invoked } = warehouseDoor(() => ({ refusal: sentence }));
+  const client = await clientOf(door.handle, await idp.token(), "legacy");
+
+  expect(client.getInstructions()).toBe(sentence);
+  for (const [name, args] of [
+    ["list", {}],
+    ["find", { words: "voorraad" }],
+    ["describe", { name: "inventory.bySku" }],
+    ["read", { name: "inventory.bySku", input: { sku: "S" } }],
+    ["write", { name: "suppliers.delete", input: { supplierId: 1 } }],
+  ] as const) {
+    const result = await client.callTool({ name, arguments: args });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: sentence }]);
+  }
+  expect(invoked).toEqual([]);
+  await client.close();
+});
+
+test("a refused person's request that is not MCP at all answers 403 with the host's sentence", async () => {
+  using idp = await identityProvider();
+  const { door } = warehouseDoor(() => ({ refusal: "Je hebt geen toegang tot het magazijn." }));
+  const response = await door.handle(
+    new Request(RESOURCE, {
+      method: "POST",
+      headers: { authorization: `Bearer ${await idp.token()}`, "content-type": "text/plain" },
+      body: "hallo",
+    }),
+  );
 
   expect(response.status).toBe(403);
   expect(await response.json()).toEqual({ error: "Je hebt geen toegang tot het magazijn." });
-  expect(invoked).toEqual([]);
+});
+
+test("a token without exp, or without sub, is refused before actorFor is asked", async () => {
+  using idp = await identityProvider();
+  const { door, asked } = warehouseDoor();
+  for (const without of ["exp", "sub"] as const) {
+    const response = await door.handle(
+      mcpPost(await idp.token({ name: "x" }, { without: [without] })),
+    );
+    expect(response.status).toBe(401);
+  }
+  expect(asked).toEqual([]);
+});
+
+test("the host's logger receives each write, with its person and program, and each failure", async () => {
+  using idp = await identityProvider();
+  const events: KoppelingEvent[] = [];
+  const door = koppeling({
+    catalogue: fromTrpcRouter(warehouseRouter(), { contextFor }),
+    glossary,
+    resource: { url: RESOURCE, scopes: [] },
+    identity: { issuer: ISSUER, jwksUrl: JWKS_URL, authorizationServer: ISSUER },
+    actorFor: () => ({ actor: warehouseAdmin }),
+    log: (event) => events.push(event),
+  });
+  const client = await clientOf(
+    door.handle,
+    await idp.token({ name: "Beheerder Een", via: "Claude" }),
+    "modern",
+  );
+  await client.callTool({
+    name: "write",
+    arguments: { name: "printer.printShelve", input: { shelfCode: "A3" } },
+  });
+  await client.callTool({
+    name: "write",
+    arguments: { name: "orders.ship", input: { orderId: 9999 } },
+  });
+  await client.callTool({
+    name: "read",
+    arguments: { name: "inventory.bySku", input: { sku: "S" } },
+  });
+
+  expect(
+    events.map((event) =>
+      event.kind === "write" ? event : { kind: event.kind, operation: event.operation },
+    ),
+  ).toEqual([
+    {
+      kind: "write",
+      operation: "printer.printShelve",
+      sub: "person-1",
+      name: "Beheerder Een",
+      via: "Claude",
+      outcome: "value",
+    },
+    { kind: "failure", operation: "orders.ship" },
+    {
+      kind: "write",
+      operation: "orders.ship",
+      sub: "person-1",
+      name: "Beheerder Een",
+      via: "Claude",
+      outcome: "unknown",
+    },
+  ]);
+  await client.close();
 });
 
 test("an actorFor that rejects answers 503 with the door's sentence, not the host's error", async () => {

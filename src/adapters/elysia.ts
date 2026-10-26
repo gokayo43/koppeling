@@ -19,6 +19,13 @@ import {
 } from "../json";
 import { allOf, describeSchema, TYPEBOX_KIND, type Described } from "../schema";
 
+declare module "elysia" {
+  interface DocumentDecoration {
+    /** `false` keeps this route from the koppeling: the door skips it and names it in its boot report. */
+    koppeling?: boolean;
+  }
+}
+
 export interface ElysiaOptions<Actor> {
   /** The headers that make the app's own auth accept a request as `actor`. */
   readonly credential: (actor: Actor) => { readonly [header: string]: string };
@@ -46,8 +53,9 @@ const ORIGIN = "http://localhost";
  * The catalogue of an Elysia 1.4 app's routes under `mount`: each named by its
  * path's segments and its method, and run through `app.handle` with the
  * actor's credential, so the route's own auth and validation run as for any
- * client. WebSocket routes and the routes the program hides from its own
- * documentation (`detail.hide`) are skipped and named in the boot report.
+ * client. WebSocket routes, the routes the program withholds from the door
+ * (`detail.koppeling: false`) and those it hides from its own documentation
+ * (`detail.hide`) are skipped and named in the boot report.
  */
 export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>): Catalogue<Actor> {
   const mount = (options.mount ?? "").replace(/\/+$/, "");
@@ -63,7 +71,12 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       skipped.push({ name, reason: "a WebSocket route, which the door does not serve" });
       continue;
     }
-    if (field(field(hooks, "detail"), "hide") === true) {
+    const detail = field(hooks, "detail");
+    if (field(detail, "koppeling") === false) {
+      skipped.push({ name, reason: "withheld by the program" });
+      continue;
+    }
+    if (field(detail, "hide") === true) {
       skipped.push({ name, reason: "hidden by the program" });
       continue;
     }
@@ -82,8 +95,13 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       description: description(hooks),
       input: inputSchema(schemas),
       output: responseSchema(app, hooks, owner),
-      run: (actor, input) =>
-        request(app, { method, path: route.path, headers: options.credential(actor) }, input),
+      run: (actor, input, signal) =>
+        request(
+          app,
+          { method, path: route.path, headers: options.credential(actor) },
+          input,
+          signal,
+        ),
     });
   }
   return catalogue(declared, skipped);
@@ -223,7 +241,12 @@ interface Target {
   readonly headers: { readonly [header: string]: string };
 }
 
-async function request(app: AnyElysia, target: Target, input: Json | undefined): Promise<Outcome> {
+async function request(
+  app: AnyElysia,
+  target: Target,
+  input: Json | undefined,
+  signal: AbortSignal,
+): Promise<Outcome> {
   const parts = input === undefined ? {} : input;
   if (!isJsonObject(parts)) return { refusal: copy.inputNotObject };
   const url = urlOf(target.path, parts["params"], parts["query"]);
@@ -236,19 +259,47 @@ async function request(app: AnyElysia, target: Target, input: Json | undefined):
     new Request(url.href, {
       method: target.method,
       headers,
+      signal,
       ...(carriesBody ? { body: JSON.stringify(body) } : {}),
     }),
   );
-  const text = await response.text();
-  // A 5xx is the program failing, and its body can carry a stack or a
-  // database's words: it is thrown, for the door to log and answer with its
-  // own sentence. A 4xx is the program's refusal and goes back as it is.
-  if (response.status >= 500) throw new Error(`HTTP ${response.status}: ${text}`);
-  if (!response.ok) return { refusal: `HTTP ${response.status}: ${text}` };
-  if (text === "") return { value: null };
-  if (!response.headers.get("content-type")?.includes("json")) return { value: text };
-  const parsed: unknown = JSON.parse(text);
-  return { value: toJson(parsed) };
+  // From here the program has been reached. A 5xx is the program failing, and
+  // its body can carry a stack or a database's words, so it is a failure the
+  // door answers with its own sentence; so is an answer that cannot be read.
+  // A 4xx is the program's refusal and goes back as it is.
+  try {
+    const text = await bodyOf(response, signal);
+    if (response.status >= 500) return { failed: new Error(`HTTP ${response.status}: ${text}`) };
+    if (!response.ok) return { refusal: `HTTP ${response.status}: ${text}` };
+    if (text === "") return { value: null };
+    if (!response.headers.get("content-type")?.includes("json")) return { value: text };
+    const parsed: unknown = JSON.parse(text);
+    return { value: toJson(parsed) };
+  } catch (cause) {
+    return { failed: cause };
+  }
+}
+
+/** A response's body, read until `signal` aborts, which cancels a stream that never ends. */
+async function bodyOf(response: Response, signal: AbortSignal): Promise<string> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) return "";
+  const cancel = () => void reader.cancel();
+  signal.addEventListener("abort", cancel, { once: true });
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+      // Bun hands a stream's chunks on as they were enqueued, a string included.
+      const part: unknown = chunk.value;
+      if (typeof part === "string") text += part;
+      else if (part instanceof Uint8Array) text += decoder.decode(part, { stream: true });
+      else throw new TypeError("A response body chunk that is neither text nor bytes");
+    }
+    return text + decoder.decode();
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
 }
 
 function urlOf(
@@ -269,7 +320,14 @@ function urlOf(
       if (segment.endsWith("?")) continue;
       return { refusal: copy.missingPathParameter(name) };
     }
-    segments.push(encodeURIComponent(textOf(value)));
+    // encodeURIComponent leaves "." and ".." as they are, and a URL resolves
+    // them, so such a value would send the call to another route, outside
+    // the mount included; an empty one would join its neighbours.
+    const encoded = encodeURIComponent(textOf(value));
+    if (encoded === "" || encoded === "." || encoded === "..") {
+      return { refusal: copy.badPathParameter(name) };
+    }
+    segments.push(encoded);
   }
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(isJsonObject(query) ? query : {})) {
