@@ -82,7 +82,26 @@ function standardJsonSchema(schema: object): Json | undefined {
   const input = converter.input;
   if (typeof input !== "function") return undefined;
   const written: unknown = input.call(converter, { target: "draft-2020-12" });
-  return toJson(written);
+  const json = toJson(written);
+  return "vendor" in props && props.vendor === "effect" ? withoutDroppedOpenness(json) : json;
+}
+
+/**
+ * Effect 4 writes `additionalProperties: true` on a struct, yet its decoding
+ * drops every key the struct does not name (measured on 4.0.5, and pinned in
+ * tests/effect4.test.ts), so the door reads that `true` as a struct that names
+ * its keys and leaves it to closing; a record's schema stays.
+ */
+function withoutDroppedOpenness(json: Json): Json {
+  if (isJsonArray(json)) return json.map((item) => withoutDroppedOpenness(item));
+  if (!isJsonObject(json)) return json;
+  return Object.fromEntries(
+    Object.entries(json).flatMap(([key, value]): [string, Json][] =>
+      key === "additionalProperties" && value === true && "properties" in json
+        ? []
+        : [[key, withoutDroppedOpenness(value)]],
+    ),
+  );
 }
 
 /**

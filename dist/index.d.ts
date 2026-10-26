@@ -1,4 +1,3 @@
-import { Effect } from "effect";
 import { JWTPayload } from "jose";
 import { AnyElysia } from "elysia";
 import { AnyTRPCRouter, inferRouterContext } from "@trpc/server";
@@ -129,7 +128,7 @@ interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
  */
 export declare function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(router: Router, options: TrpcOptions<Router, Actor>): Catalogue<Actor>;
 //#endregion
-//#region src/auth.d.ts
+//#region src/door.d.ts
 /** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
 interface Identity {
   /** The `iss` every token must carry: the provider's public origin. */
@@ -143,8 +142,6 @@ interface Identity {
   /** The authorization server the metadata document sends a client to for its sign-in. */
   readonly authorizationServer: string;
 }
-//#endregion
-//#region src/events.d.ts
 /**
  * What a write came to: the program's value, its refusal, a failure before the
  * program was reached (nothing changed), or `unknown`: the program was reached
@@ -169,8 +166,6 @@ type KoppelingEvent = {
   readonly operation: string | null;
   readonly cause: unknown;
 };
-//#endregion
-//#region src/door.d.ts
 /**
  * Who a token's person is to the program, with the operations they may use
  * (every one when `allows` is absent), or the program's sentence for why they

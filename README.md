@@ -15,8 +15,9 @@ built at the host.
 "koppeling": "git+ssh://git@github.com/gokayo43/koppeling.git#<sha>"
 ```
 
-`@modelcontextprotocol/server` and `jose` come with it. `effect` (`^3.22.1`) is
-a peer, so a host on Effect keeps one copy and a host without it is given one.
+`@modelcontextprotocol/server` and `jose` come with it. The Effect 3 the door is
+written in is bundled into `dist/`, so a host may run any Effect, 3 or 4, or
+none; a host's own Effect 3 schemas are still read as Effect schemas.
 `@trpc/server` (`^11`) and `elysia` (`^1.4`) are optional peers: the host
 already has the one its program is written in.
 

@@ -3,7 +3,8 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { JWTPayload } from "jose";
 
 import { instructionsFor, type Directory } from "../../src/directory";
-import { reporter, type KoppelingEvent } from "../../src/events";
+import type { KoppelingEvent } from "../../src/door";
+import { reporter } from "../../src/events";
 import { Pages } from "../../src/pages";
 import type { Session } from "../../src/run";
 import { mcpServer } from "../../src/tools";

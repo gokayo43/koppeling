@@ -1,29 +1,7 @@
 import { Cause, Effect } from "effect";
 import type { JWTPayload } from "jose";
 
-/**
- * What a write came to: the program's value, its refusal, a failure before the
- * program was reached (nothing changed), or `unknown`: the program was reached
- * and its answer was lost or late, so the change may have been made.
- */
-export type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
-
-/**
- * What the door tells the host's logger. `write`: one per call of a write
- * operation, naming the person and the program acting for them. `failure`: a
- * failure the person was answered with the door's own sentence for; its
- * `operation` is null when the sign-in failed (the key set, or `actorFor`).
- */
-export type KoppelingEvent =
-  | {
-      readonly kind: "write";
-      readonly operation: string;
-      readonly sub: string | null;
-      readonly name: string | null;
-      readonly via: string | null;
-      readonly outcome: WriteOutcome;
-    }
-  | { readonly kind: "failure"; readonly operation: string | null; readonly cause: unknown };
+import type { KoppelingEvent, WriteOutcome } from "./door";
 
 export type Report = (event: KoppelingEvent) => Effect.Effect<void>;
 

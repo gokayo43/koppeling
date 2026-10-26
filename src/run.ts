@@ -6,7 +6,8 @@ import type { Kind, Outcome } from "./catalogue";
 import { strayKeys } from "./closed";
 import { copy } from "./copy";
 import { neighbours, type Directory } from "./directory";
-import { writeEvent, type Report, type WriteOutcome } from "./events";
+import type { WriteOutcome } from "./door";
+import { writeEvent, type Report } from "./events";
 import type { Json } from "./json";
 import { pageKey, paged, type Pages, type Produced } from "./pages";
 

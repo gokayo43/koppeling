@@ -8,13 +8,51 @@ import {
 import { Data, Effect } from "effect";
 import type { JWTPayload } from "jose";
 
-import { bearerVerifier, type Identity } from "./auth";
+import { bearerVerifier } from "./auth";
 import type { Catalogue, Note, Operation } from "./catalogue";
 import { copy } from "./copy";
 import { admitted, instructionsFor, toDirectory } from "./directory";
-import { reporter, type KoppelingEvent } from "./events";
+import { reporter } from "./events";
 import { Pages } from "./pages";
 import { mcpServer, refusalServer } from "./tools";
+
+/** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
+export interface Identity {
+  /** The `iss` every token must carry: the provider's public origin. */
+  readonly issuer: string;
+  /**
+   * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
+   * when absent. Separate from `issuer` so a host beside the provider can fetch
+   * them over its own network while tokens still name the public origin.
+   */
+  readonly jwksUrl?: string;
+  /** The authorization server the metadata document sends a client to for its sign-in. */
+  readonly authorizationServer: string;
+}
+
+/**
+ * What a write came to: the program's value, its refusal, a failure before the
+ * program was reached (nothing changed), or `unknown`: the program was reached
+ * and its answer was lost or late, so the change may have been made.
+ */
+export type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
+
+/**
+ * What the door tells the host's logger. `write`: one per call of a write
+ * operation, naming the person and the program acting for them. `failure`: a
+ * failure the person was answered with the door's own sentence for; its
+ * `operation` is null when the sign-in failed (the key set, or `actorFor`).
+ */
+export type KoppelingEvent =
+  | {
+      readonly kind: "write";
+      readonly operation: string;
+      readonly sub: string | null;
+      readonly name: string | null;
+      readonly via: string | null;
+      readonly outcome: WriteOutcome;
+    }
+  | { readonly kind: "failure"; readonly operation: string | null; readonly cause: unknown };
 
 /**
  * Who a token's person is to the program, with the operations they may use

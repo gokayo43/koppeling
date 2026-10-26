@@ -39,7 +39,8 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
   as the default.
 - `src/glossary.ts`: `glossaryFrom`, a CONTEXT.md to the door's opening words.
 - `src/auth.ts`, `src/door.ts`: the bearer check and `koppeling()`, the HTTP
-  edge, in Effect.
+  edge, in Effect; `src/door.ts` also holds the public types the host's
+  options name (`Identity`, `KoppelingEvent`).
 - `src/copy.ts`: every sentence a person may read, in Dutch.
 - `tests/fixtures/`: a warehouse router shaped like wmstcs's and an API app
   shaped like nfp-elysia's, with invented values only; the suite and
@@ -92,6 +93,17 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   koppelingstoken reaches a door only exchanged for such a token. It signs with
   a new key the moment it rotates one, which is why the door's key-set refetch
   cool-down is 5 seconds (`src/auth.ts`).
+- **Effect 3 is bundled into `dist/` and is no peer** (`deps.alwaysBundle` in
+  `tsdown.config.ts`): the portal runs Effect 4.0.6, where a peer `effect`
+  resolved to 4 and the unbundled `dist/` failed at load ("does not provide an
+  export named 'JSONSchema'"). A host may run any Effect or none, and its own
+  Effect 3 schemas are still recognised across the two copies, because Effect
+  keys its type identifiers with `Symbol.for` (`tests/bundled.test.ts` holds
+  both). It took `dist/index.js` from 84 KB to 606 KB. The source and the suite
+  use the pinned dev dependency. Keep every exported type free of Effect's:
+  the declaration bundle inlines whatever an exported module's declarations
+  import, which carried 40 KB of Effect types until the public types moved
+  into `src/door.ts`.
 - **`knip` cannot load its config from a worktree under `.claude/`**: knip hands
   jiti `process.cwd()` as a file name, so jiti looks for a tsconfig from the
   parent directory and finds the main checkout's. Run it from `src/` with

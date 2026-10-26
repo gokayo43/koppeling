@@ -2,20 +2,7 @@ import { Data, Effect } from "effect";
 import { createRemoteJWKSet, errors, jwtVerify, type JWTPayload } from "jose";
 
 import { copy } from "./copy";
-
-/** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
-export interface Identity {
-  /** The `iss` every token must carry: the provider's public origin. */
-  readonly issuer: string;
-  /**
-   * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
-   * when absent. Separate from `issuer` so a host beside the provider can fetch
-   * them over its own network while tokens still name the public origin.
-   */
-  readonly jwksUrl?: string;
-  /** The authorization server the metadata document sends a client to for its sign-in. */
-  readonly authorizationServer: string;
-}
+import type { Identity } from "./door";
 
 export class Unauthenticated extends Data.TaggedError("Unauthenticated")<{
   readonly sentence: string;
