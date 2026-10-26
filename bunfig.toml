@@ -18,5 +18,7 @@ coverageThreshold = { lines = 0.75, functions = 0.75 }
 coverageSkipTestFiles = true
 # The fixtures and helpers under tests/ are stand-ins for a host program: most
 # of the fixture routers' handlers exist to be listed, never run, so their
-# function coverage measures the fixture rather than the package.
-coveragePathIgnorePatterns = ["tests/**"]
+# function coverage measures the fixture rather than the package. dist/ is the
+# built package, which tests/bundled.test.ts loads: its coverage is the bundled
+# Effect's, and the source it is built from is measured under src/.
+coveragePathIgnorePatterns = ["tests/**", "dist/**"]
