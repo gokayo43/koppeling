@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
 
 import { check } from "@gokayo43/dev-config/property";
+import { Schema } from "effect";
 import { Elysia, t } from "elysia";
 import { array, constantFrom, integer, property, tuple, uniqueArray } from "fast-check";
 
 import { fromElysia } from "../src/index";
 import { apiApp, credential, type ApiActor } from "./fixtures/api";
 import { apiCaller } from "./fixtures/doors";
+
+/** A signal no case aborts, for a run the case lets finish. */
+const unaborted = new AbortController().signal;
 
 const MCP_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"] as const;
@@ -184,24 +188,22 @@ test("a guard's schema is composed with the route's own", () => {
   });
 });
 
-test("a 5xx answer is a failure the call throws, not a refusal it answers", async () => {
-  const settled = await operation("orders.fail.get")
-    .run(apiCaller, {})
-    .then(
-      (outcome) => JSON.stringify(outcome),
-      (error) => `threw ${String(error)}`,
-    );
-  expect(settled).toBe("threw Error: HTTP 500: database unavailable");
+test("a 5xx answer is a failure after the program was reached, not a refusal it answers", async () => {
+  const outcome = await operation("orders.fail.get").run(apiCaller, {}, unaborted);
+
+  expect("failed" in outcome && String(outcome.failed)).toBe(
+    "Error: HTTP 500: database unavailable",
+  );
 });
 
 test("a call goes through the app's own auth with the actor's credential", async () => {
   const product = operation("products.id.get");
 
-  expect(await product.run(apiCaller, { params: { id: 4 } })).toEqual({
+  expect(await product.run(apiCaller, { params: { id: 4 } }, unaborted)).toEqual({
     value: { id: 4, name: "Product", price: 10 },
   });
   expect(
-    await product.run({ key: "someone-else" } satisfies ApiActor, { params: { id: 4 } }),
+    await product.run({ key: "someone-else" } satisfies ApiActor, { params: { id: 4 } }, unaborted),
   ).toEqual({
     refusal: "HTTP 401: Unauthorized",
   });
@@ -220,10 +222,14 @@ test("query values, arrays among them, and a JSON body reach the route as a clie
   const derived = fromElysia(app, { credential, mount: "/api" });
   const [notes, search] = derived.operations;
 
-  expect(await search?.run(apiCaller, { query: { q: "uitlaat", tag: ["a", "b"] } })).toEqual({
+  expect(
+    await search?.run(apiCaller, { query: { q: "uitlaat", tag: ["a", "b"] } }, unaborted),
+  ).toEqual({
     value: { q: "uitlaat", tag: ["a", "b"] },
   });
-  expect(await notes?.run(apiCaller, { params: { id: "a/b" }, body: { text: "hoi" } })).toEqual({
+  expect(
+    await notes?.run(apiCaller, { params: { id: "a/b" }, body: { text: "hoi" } }, unaborted),
+  ).toEqual({
     value: { id: "a/b" },
   });
   expect(seen).toEqual([{ text: "hoi" }]);
@@ -237,10 +243,10 @@ test("a missing path parameter or an input that is not an object is refused befo
   );
   const token = derived.operations.find(({ name }) => name === "orders.token.get");
 
-  expect(await token?.run(apiCaller, {})).toEqual({
+  expect(await token?.run(apiCaller, {}, unaborted)).toEqual({
     refusal: "De invoer mist params.token, dat in het pad staat.",
   });
-  expect(await token?.run(apiCaller, "ord-1")).toHaveProperty("refusal");
+  expect(await token?.run(apiCaller, "ord-1", unaborted)).toHaveProperty("refusal");
   expect(invoked).toEqual([]);
 });
 
@@ -271,6 +277,55 @@ test("named models are read from the app's definitions, never through its compil
   expect(derived.operations.find(({ name }) => name === "m3.post")?.input).toMatchObject({
     properties: { body: { required: ["field3"] } },
   });
+});
+
+test("a path parameter that is empty, '.' or '..' is refused, so a call never reaches another route", async () => {
+  const ran: string[] = [];
+  const app = new Elysia()
+    .post("/outside", () => ran.push("POST /outside"))
+    .post("/api/v1/admin/refund", () => ran.push("POST /api/v1/admin/refund"))
+    .post("/api/v1/orders/:a/:b/refund", () => ran.push("POST /api/v1/orders/:a/:b/refund"));
+  const [refund] = fromElysia(app, { credential, mount: "/api/v1" }).operations.filter(
+    ({ name }) => name === "orders.a.b.refund.post",
+  );
+  for (const params of [
+    { a: "..", b: "admin" },
+    { a: "..", b: ".." },
+    { a: ".", b: "x" },
+    { a: "", b: "x" },
+  ]) {
+    expect(await refund?.run(apiCaller, { params }, unaborted)).toHaveProperty("refusal");
+  }
+  expect(
+    await refund?.run(apiCaller, { params: { a: "../..", b: "x" } }, unaborted),
+  ).toHaveProperty("value");
+  expect(ran).toEqual(["POST /api/v1/orders/:a/:b/refund"]);
+});
+
+test("a route the program withholds from the door is skipped and named, apart from hidden ones", () => {
+  const app = new Elysia({ prefix: "/api" })
+    .post("/tokens", () => 1, { detail: { koppeling: false } })
+    .get("/docs", () => 1, { detail: { hide: true } })
+    .get("/stock", () => 1);
+  const derived = fromElysia(app, { credential, mount: "/api" });
+
+  expect(derived.operations.map(({ name }) => name)).toEqual(["stock.get"]);
+  expect(derived.skipped).toEqual([
+    { name: "docs.get", reason: "hidden by the program" },
+    { name: "tokens.post", reason: "withheld by the program" },
+  ]);
+});
+
+test("a response that is an Effect 3 schema, plain or as a Standard Schema, is the output", () => {
+  const Item = Schema.Struct({ id: Schema.Number });
+  const app = new Elysia({ prefix: "/api" })
+    // Elysia types a response as TypeBox or a Standard Schema; a plain Effect
+    // schema reaches it untyped, which is the case this pins.
+    .get("/plain", () => ({ id: 1 }), { response: Object(Item) })
+    .get("/standard", () => ({ id: 1 }), { response: Schema.standardSchemaV1(Item) });
+  for (const route of fromElysia(app, { credential, mount: "/api" }).operations) {
+    expect(route.output).toMatchObject({ type: "object", required: ["id"] });
+  }
 });
 
 test("a route naming a model the app does not have fails the boot, naming the route", () => {

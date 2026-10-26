@@ -49,18 +49,21 @@ export async function identityProvider() {
         readonly expiresIn?: number;
         readonly audience?: string;
         readonly issuer?: string;
+        readonly without?: readonly ("exp" | "sub")[];
       } = {},
     ) {
       const key = keys.find((candidate) => candidate.kid === (options.kid ?? keys.at(-1)?.kid));
       if (key === undefined) throw new Error(`no key ${options.kid ?? ""}`);
       const now = Math.floor(Date.now() / 1000);
-      return new SignJWT({ sub: "person-1", ...claims })
+      const without = new Set(options.without ?? []);
+      const jwt = new SignJWT({ ...(without.has("sub") ? {} : { sub: "person-1" }), ...claims })
         .setProtectedHeader({ alg: "ES256", kid: key.kid })
         .setIssuer(options.issuer ?? ISSUER)
         .setAudience(options.audience ?? RESOURCE)
-        .setIssuedAt(now)
-        .setExpirationTime(now + (options.expiresIn ?? 300))
-        .sign(key.privateKey);
+        .setIssuedAt(now);
+      return (
+        without.has("exp") ? jwt : jwt.setExpirationTime(now + (options.expiresIn ?? 300))
+      ).sign(key.privateKey);
     },
     [Symbol.dispose]() {
       globalThis.fetch = original;

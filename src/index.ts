@@ -9,4 +9,6 @@ export {
   type Koppeling,
   type KoppelingOptions,
 } from "./door";
+export type { KoppelingEvent, WriteOutcome } from "./events";
+export { glossaryFrom, type GlossaryOptions } from "./glossary";
 export type { Json, JsonObject, JsonSchema } from "./json";

@@ -13,7 +13,9 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { z } from "zod";
 
-import { instructionsFor, mcpServer } from "../src/tools";
+import { instructionsFor, type Directory } from "../src/directory";
+import { reporter } from "../src/events";
+import { mcpServer } from "../src/tools";
 import {
   apiCaller,
   apiDirectory,
@@ -22,25 +24,21 @@ import {
 } from "../tests/fixtures/doors";
 import { glossary } from "../tests/fixtures/warehouse";
 
-async function connect<Actor>(
-  ...[directory, words, actor, claims]: Parameters<typeof mcpServer<Actor>>
-) {
+async function connect<Actor>(directory: Directory<Actor>, words: string, actor: Actor) {
+  const session = { directory, actor, claims: walker, report: reporter(undefined) };
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await mcpServer(directory, words, actor, claims).connect(serverSide);
+  await mcpServer(session, instructionsFor(words, directory)).connect(serverSide);
   const client = new Client({ name: "walk", version: "1" });
   await client.connect(clientSide);
   return client;
 }
 
-const walker = { sub: "walk", name: "bin/walk.ts" };
+const walker = { sub: "walk", name: "bin/walk.ts", via: "bin/walk.ts" };
 const warehouse = warehouseDirectory();
 const api = apiDirectory();
 const doors = [
-  {
-    name: "warehouse",
-    client: await connect(warehouse, instructionsFor(glossary, warehouse), warehouseAdmin, walker),
-  },
-  { name: "api", client: await connect(api, instructionsFor("", api), apiCaller, walker) },
+  { name: "warehouse", client: await connect(warehouse, glossary, warehouseAdmin) },
+  { name: "api", client: await connect(api, "", apiCaller) },
 ];
 
 const textOf = (result: Awaited<ReturnType<Client["callTool"]>>) =>

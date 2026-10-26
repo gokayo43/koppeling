@@ -1,6 +1,6 @@
+import { toDirectory, type Directory } from "../../src/directory";
 /** The two fixture programs as the door offers them, for the suite and for `bin/walk.ts`. */
 import { fromElysia, fromTrpcRouter } from "../../src/index";
-import { toDirectory, type Directory } from "../../src/tools";
 import { apiApp, credential, type ApiActor } from "./api";
 import { contextFor, warehouseRouter, type WarehouseActor } from "./warehouse";
 

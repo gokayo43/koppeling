@@ -5,8 +5,15 @@ import type { Described } from "./schema";
 /** `read` changes nothing; `write` changes data, so the person is asked first. */
 export type Kind = "read" | "write";
 
-/** What a program answered: its value, or its own refusal sentence. */
-export type Outcome = { readonly value: Json } | { readonly refusal: string };
+/**
+ * What a program answered: its value, its own refusal sentence, or a failure
+ * after the program was reached, when whatever it was asked to change may have
+ * changed.
+ */
+export type Outcome =
+  | { readonly value: Json }
+  | { readonly refusal: string }
+  | { readonly failed: unknown };
 
 /** One callable thing a program declares, as the door offers it. */
 export interface Operation<Actor> {
@@ -18,11 +25,11 @@ export interface Operation<Actor> {
   readonly input: JsonSchema;
   readonly output: JsonSchema | undefined;
   /**
-   * Runs the operation once, as `actor`, through the program's own code path.
-   * A refusal the program states is an outcome; anything thrown is a failure
-   * the program did not mean to show.
+   * Runs the operation once, as `actor`, through the program's own code path,
+   * giving up when `signal` aborts. A throw is a failure before the program
+   * was reached, so nothing changed.
    */
-  readonly run: (actor: Actor, input: Json | undefined) => Promise<Outcome>;
+  readonly run: (actor: Actor, input: Json | undefined, signal: AbortSignal) => Promise<Outcome>;
 }
 
 /** An operation as an adapter derives it, before the catalogue places it. */

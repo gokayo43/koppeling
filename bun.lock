@@ -6,7 +6,6 @@
       "name": "koppeling",
       "dependencies": {
         "@modelcontextprotocol/server": "2.3.1",
-        "effect": "3.22.3",
         "jose": "6.2.12",
       },
       "devDependencies": {
@@ -17,6 +16,7 @@
         "@sinclair/typebox": "0.34.52",
         "@trpc/server": "11.19.0",
         "@types/bun": "1.4.3",
+        "effect": "3.22.3",
         "effect4": "npm:effect@4.0.5",
         "elysia": "1.4.30",
         "eslint-import-resolver-typescript": "4.4.5",
@@ -32,16 +32,13 @@
         "zod": "4.6.7",
       },
       "peerDependencies": {
-        "@sinclair/typebox": "^0.34",
         "@trpc/server": "^11",
+        "effect": "^3.22.1",
         "elysia": "^1.4",
-        "zod": "^4",
       },
       "optionalPeers": [
-        "@sinclair/typebox",
         "@trpc/server",
         "elysia",
-        "zod",
       ],
     },
   },

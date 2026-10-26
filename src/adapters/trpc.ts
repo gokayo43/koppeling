@@ -7,6 +7,7 @@ import {
   type Declared,
   type Kind,
   type Note,
+  type Outcome,
 } from "../catalogue";
 import { toJson, type Json } from "../json";
 import { allOf, describeSchema, type Described } from "../schema";
@@ -30,7 +31,8 @@ function kindOf(type: string): Kind | undefined {
 
 /**
  * The catalogue of a tRPC v11 router: every query and mutation, named by its
- * path. Subscriptions are skipped and named in the boot report.
+ * path. Subscriptions and the procedures the program withholds from the door
+ * (`meta.koppeling: false`) are skipped and named in the boot report.
  */
 export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
   router: Router,
@@ -41,17 +43,28 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
    * for a router of unknown shape, so the path is walked by property access,
    * the one question it answers.
    */
-  const call = async (actor: Actor, path: string, input: Json | undefined): Promise<Json> => {
-    let target: unknown = router.createCaller(await options.contextFor(actor));
+  const run = async (
+    actor: Actor,
+    path: string,
+    input: Json | undefined,
+    signal: AbortSignal,
+  ): Promise<Outcome> => {
+    let target: unknown = router.createCaller(await options.contextFor(actor), { signal });
     for (const segment of path.split(".")) {
       // oxlint-disable-next-line typescript/no-unsafe-member-access -- the caller proxy, walked by the path tRPC itself named
       target = Object(target)[segment];
     }
     if (typeof target !== "function")
       throw new Error(`The tRPC caller has no procedure at "${path}"`);
-    // oxlint-disable-next-line typescript/no-unsafe-call -- the procedure the walk reached
-    const answer: unknown = await target(input);
-    return toJson(answer);
+    // From here the procedure's own chain runs: its refusal is the program's
+    // sentence, and anything else it throws a failure after it was reached.
+    try {
+      // oxlint-disable-next-line typescript/no-unsafe-call -- the procedure the walk reached
+      const answer: unknown = await target(input);
+      return { value: toJson(answer) };
+    } catch (error) {
+      return isRefusal(error) ? { refusal: error.message } : { failed: error };
+    }
   };
   const declared: Declared<Actor>[] = [];
   const skipped: Note[] = [];
@@ -59,6 +72,10 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
     const kind = kindOf(definition.type);
     if (kind === undefined) {
       skipped.push({ name: path, reason: `${definition.type}, which the door does not serve` });
+      continue;
+    }
+    if (definition.withheld) {
+      skipped.push({ name: path, reason: "withheld by the program" });
       continue;
     }
     const owner = `tRPC procedure "${path}"`;
@@ -70,14 +87,7 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,
       output:
         definition.output === undefined ? undefined : describeSchema(definition.output, owner),
-      run: async (actor, input) => {
-        try {
-          return { value: await call(actor, path, input) };
-        } catch (error) {
-          if (isRefusal(error)) return { refusal: error.message };
-          throw error;
-        }
-      },
+      run: (actor, input, signal) => run(actor, path, input, signal),
     });
   }
   return catalogue(declared, skipped);
@@ -88,6 +98,8 @@ interface ProcedureDefinition {
   readonly inputs: readonly unknown[];
   readonly output: unknown;
   readonly description: string | undefined;
+  /** `meta.koppeling === false`: the program keeps this procedure from the door. */
+  readonly withheld: boolean;
 }
 
 /**
@@ -132,6 +144,7 @@ function procedureDefinitions(router: AnyTRPCRouter): [string, ProcedureDefiniti
         output: hasKey(def, "output") ? def.output : undefined,
         description:
           typeof description === "string" && description.trim() ? description.trim() : undefined,
+        withheld: hasKey(meta, "koppeling") && meta.koppeling === false,
       },
     ];
   });

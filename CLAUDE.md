@@ -24,8 +24,17 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
   Plain TypeScript; the door imports neither (the boundaries rule says so).
 - `src/schema.ts`: a program's schema, in Effect Schema, TypeBox or Standard
   JSON Schema, to JSON Schema.
-- `src/find.ts`: the ranking behind `find`.
-- `src/tools.ts`: the four tools and the MCP server for one request.
+- `src/directory.ts`: a catalogue as the tools read it, built once per door:
+  areas, names, each operation's name without its area, the search index and
+  the instructions outline.
+- `src/find.ts`: the search index and the ranking behind `find`.
+- `src/run.ts`: one `read` or `write`: the time limit, the outcomes and the
+  write events.
+- `src/tools.ts`: the five tools, their schemas built once, and the MCP server
+  for one request (or for a refused person).
+- `src/events.ts`: what the door tells the host's logger, and Effect's logger
+  as the default.
+- `src/glossary.ts`: `glossaryFrom`, a CONTEXT.md to the door's opening words.
 - `src/auth.ts`, `src/door.ts`: the bearer check and `koppeling()`, the HTTP
   edge, in Effect.
 - `src/copy.ts`: every sentence a person may read, in Dutch.
@@ -63,10 +72,13 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   public hostname: Cloudflare's Bot Fight Mode on garagetcs.nl challenges a bare
   HTTP client. It fetches the key set over the garage network while every token
   still names the public origin as `iss`.
-- **The portal issues no JWT access tokens yet.** Its OAuth provider (Better
-  Auth's `oidcProvider`) hands out opaque tokens, and a koppelingstoken is
-  opaque too; the move that brings the `jwt` plugin is
-  A1M4N3/Bedrijfs-Portaal#620. Until then no host can verify a portal token here.
+- **The portal signs every koppeling access token as a JWT** (Better Auth's
+  `jwt` plugin with `@better-auth/oauth-provider`, keys served at
+  `<origin>/api/auth/jwks`): `sub` the person's portal account, `name`, `via`
+  the program acting for them, `aud` the one door the token was asked for. A
+  koppelingstoken reaches a door only exchanged for such a token. It signs with
+  a new key the moment it rotates one, which is why the door's key-set refetch
+  cool-down is 5 seconds (`src/auth.ts`).
 - **`knip` cannot load its config from a worktree under `.claude/`**: knip hands
   jiti `process.cwd()` as a file name, so jiti looks for a tsconfig from the
   parent directory and finds the main checkout's. Run it from `src/` with

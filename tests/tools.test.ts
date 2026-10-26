@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 
-import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import type { Client } from "@modelcontextprotocol/client";
+import { Elysia } from "elysia";
 import { z } from "zod";
 
 import { copy } from "../src/copy";
-import { instructionsFor, mcpServer, type Directory } from "../src/tools";
+import { toDirectory } from "../src/directory";
+import { fromElysia } from "../src/index";
+import { credential } from "./fixtures/api";
 import {
   apiCaller,
   apiDirectory,
@@ -13,21 +16,7 @@ import {
   warehousePicker,
 } from "./fixtures/doors";
 import { glossary, type WarehouseActor } from "./fixtures/warehouse";
-
-async function connected<Actor>(directory: Directory<Actor>, actor: Actor, words = glossary) {
-  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await mcpServer(directory, instructionsFor(words, directory), actor, { sub: "person-1" }).connect(
-    serverSide,
-  );
-  const client = new Client({ name: "tools-test", version: "1" });
-  await client.connect(clientSide);
-  return {
-    client,
-    async [Symbol.asyncDispose]() {
-      await client.close();
-    },
-  };
-}
+import { connected } from "./support/session";
 
 /** The warehouse door, recording the path of every procedure the door ran. */
 async function warehouse(actor: WarehouseActor = warehouseAdmin) {
@@ -35,6 +24,7 @@ async function warehouse(actor: WarehouseActor = warehouseAdmin) {
   const door = await connected(
     warehouseDirectory((path) => invoked.push(path)),
     actor,
+    glossary,
   );
   return { ...door, invoked };
 }
@@ -43,7 +33,7 @@ type Called = Awaited<ReturnType<Client["callTool"]>>;
 const textOf = (result: Called) =>
   result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
 
-test("the door offers exactly four tools, in a fixed order, read-only where they read", async () => {
+test("the door offers exactly five tools, in a fixed order, read-only where they read", async () => {
   await using door = await warehouse();
   const { tools } = await door.client.listTools();
 
@@ -51,11 +41,29 @@ test("the door offers exactly four tools, in a fixed order, read-only where they
     ["list", { readOnlyHint: true }],
     ["find", { readOnlyHint: true }],
     ["describe", { readOnlyHint: true }],
-    ["call", { readOnlyHint: false, destructiveHint: true }],
+    ["read", { readOnlyHint: true }],
+    ["write", { readOnlyHint: false, destructiveHint: true }],
   ]);
-  const call = tools.find((tool) => tool.name === "call");
-  expect(call?.description).toContain("write wijzigt gegevens: vraag de persoon eerst");
+  const write = tools.find((tool) => tool.name === "write");
+  expect(write?.description).toContain("Een write wijzigt gegevens: vraag de persoon eerst");
   for (const tool of tools) expect(tool.inputSchema.type).toBe("object");
+});
+
+test("read runs only reads and write only writes, each refusal naming the right tool", async () => {
+  await using door = await warehouse();
+  const asWrite = await door.client.callTool({
+    name: "write",
+    arguments: { name: "inventory.bySku", input: { sku: "S" } },
+  });
+  const asRead = await door.client.callTool({
+    name: "read",
+    arguments: { name: "suppliers.delete", input: { supplierId: 1 } },
+  });
+
+  expect(asWrite.isError).toBe(true);
+  expect(textOf(asWrite)).toBe(copy.wrongTool("inventory.bySku", "read"));
+  expect(textOf(asRead)).toBe(copy.wrongTool("suppliers.delete", "write"));
+  expect(door.invoked).toEqual([]);
 });
 
 test("the instructions are the host's glossary followed by every area with its count", async () => {
@@ -166,7 +174,7 @@ test("describe answers the whole operation, its side-effect line included", asyn
 test("call answers the program's value as text and as structured content", async () => {
   await using door = await warehouse();
   const result = await door.client.callTool({
-    name: "call",
+    name: "read",
     arguments: { name: "inventory.lastKnownPlaces", input: { sku: "SKU-1" } },
   });
 
@@ -180,7 +188,7 @@ test("call answers the program's value as text and as structured content", async
 test("an input the program's schema rejects answers a tool error carrying the schema's message", async () => {
   await using door = await warehouse();
   const result = await door.client.callTool({
-    name: "call",
+    name: "read",
     arguments: { name: "orders.get", input: { orderId: "1001" } },
   });
 
@@ -191,7 +199,7 @@ test("an input the program's schema rejects answers a tool error carrying the sc
 test("a program's own refusal answers a tool error with the program's sentence, and its guard ran", async () => {
   await using door = await warehouse(warehousePicker);
   const result = await door.client.callTool({
-    name: "call",
+    name: "write",
     arguments: { name: "suppliers.delete", input: { supplierId: 1 } },
   });
 
@@ -203,7 +211,7 @@ test("a program's own refusal answers a tool error with the program's sentence, 
 test("an unknown name is answered with the canonical list and runs nothing", async () => {
   await using door = await warehouse();
   const inArea = await door.client.callTool({
-    name: "call",
+    name: "write",
     arguments: { name: "printer.print", input: {} },
   });
   expect(inArea.isError).toBe(true);
@@ -230,7 +238,7 @@ test("an unknown name is answered with the canonical list and runs nothing", asy
   );
   for (const name of ["Inventory.bySku", "inventory.bysku", "inventory.bySku ", "bySku"]) {
     expect(
-      (await door.client.callTool({ name: "call", arguments: { name, input: { sku: "S" } } }))
+      (await door.client.callTool({ name: "read", arguments: { name, input: { sku: "S" } } }))
         .isError,
     ).toBe(true);
   }
@@ -297,16 +305,66 @@ test("a find that meets nothing says so and names the areas", async () => {
   });
 });
 
-test("a write whose handler fails runs once and answers the door's sentence, not the program's error", async () => {
+test("a write that fails inside the program runs once and says the change may have been made", async () => {
   await using door = await warehouse();
   const result = await door.client.callTool({
-    name: "call",
+    name: "write",
     arguments: { name: "orders.ship", input: { orderId: 9999 } },
   });
 
   expect(result.isError).toBe(true);
-  expect(textOf(result)).toBe(copy.internalError);
+  expect(textOf(result)).toBe(copy.writeUncertain);
+  expect(textOf(result)).not.toContain("ECONNREFUSED");
   expect(door.invoked).toEqual(["orders.ship"]);
+  expect(
+    door.events.map((event) => [event.kind, "outcome" in event ? event.outcome : null]),
+  ).toEqual([
+    ["failure", null],
+    ["write", "unknown"],
+  ]);
+});
+
+test("an Elysia write that recorded its change and then failed to answer says the change may have been made", async () => {
+  const ledger: string[] = [];
+  const app = new Elysia()
+    .post("/api/v1/refunds", ({ status }) => {
+      ledger.push("refund");
+      return status(500, "after commit");
+    })
+    .post("/api/v1/credits", () => {
+      ledger.push("credit");
+      return new Response("{not json", { headers: { "content-type": "application/json" } });
+    });
+  await using door = await connected(
+    toDirectory(fromElysia(app, { credential, mount: "/api/v1" })),
+    apiCaller,
+  );
+  for (const name of ["refunds.post", "credits.post"]) {
+    const result = await door.client.callTool({ name: "write", arguments: { name, input: {} } });
+    expect(textOf(result)).toBe(copy.writeUncertain);
+  }
+  expect(ledger).toEqual(["refund", "credit"]);
+  expect(
+    door.events
+      .filter((event) => event.kind === "write")
+      .map((event) => "outcome" in event && event.outcome),
+  ).toEqual(["unknown", "unknown"]);
+});
+
+test("find indexes a name without its area wherever the host draws areas", async () => {
+  const app = new Elysia()
+    .get("/api/admin/products/:id", () => 1)
+    .get("/api/admin/orders", () => 1);
+  const directory = toDirectory(
+    fromElysia(app, { credential, mount: "/api", area: (segments) => segments[1] ?? "" }),
+  );
+  await using door = await connected(directory, apiCaller);
+  const found = await door.client.callTool({ name: "find", arguments: { words: "admin" } });
+
+  expect(found.structuredContent).toMatchObject({
+    operations: [{ name: "admin.orders.get" }, { name: "admin.products.id.get" }],
+  });
+  expect(door.client.getInstructions()).toContain("- orders (1 operatie): admin.orders.get");
 });
 
 test("an Elysia route that fails with a 5xx answers the door's sentence, and its body stays out", async () => {
@@ -317,7 +375,7 @@ test("an Elysia route that fails with a 5xx answers the door's sentence, and its
     "",
   );
   const result = await door.client.callTool({
-    name: "call",
+    name: "read",
     arguments: { name: "orders.fail.get", input: {} },
   });
 
@@ -330,13 +388,13 @@ test("an Elysia route that fails with a 5xx answers the door's sentence, and its
 test("an Elysia route's answer and refusal pass through call", async () => {
   await using door = await connected(apiDirectory(), apiCaller, "");
   const found = await door.client.callTool({
-    name: "call",
+    name: "read",
     arguments: { name: "products.id.get", input: { params: { id: 4 } } },
   });
   expect(found.structuredContent).toEqual({ result: { id: 4, name: "Product", price: 10 } });
 
   const refused = await door.client.callTool({
-    name: "call",
+    name: "read",
     arguments: { name: "vehicles.lookup.get", input: { query: { license_plate: "00-XX-00" } } },
   });
   expect(refused.isError).toBe(true);
