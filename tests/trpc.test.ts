@@ -274,13 +274,23 @@ test("a refusal's details are the cause's own details object, and nothing else o
   expect(await run("duplicate", undefined)).toEqual({ refusal: "Bestaat al" });
 });
 
-test("an input's issues come back only from tRPC's own input parse, never from a program's refusal", async () => {
+test("an input's issues come from the procedure's own schema before it runs, and never from a program's error", async () => {
+  // The likeliest wrong forwards any error cause's issues, so a program's
+  // BAD_REQUEST that happens to carry them hands the agent its internals.
+  const ran: string[] = [];
   const router = t.router({
-    carrier: t.procedure.input(z.object({ name: z.string() })).mutation(() => 1),
-    conflict: t.procedure.mutation(() => {
+    carrier: t.procedure
+      .use(({ path, next }) => {
+        ran.push(path);
+        return next();
+      })
+      .input(z.object({ name: z.string() }))
+      .input(z.object({ note: z.string().optional() }))
+      .mutation(() => 1),
+    thrown: t.procedure.mutation(() => {
       throw new TRPCError({
-        code: "CONFLICT",
-        message: "Bestaat al",
+        code: "BAD_REQUEST",
+        message: "Ongeldige order",
         cause: { issues: [{ message: "intern", path: ["secret"] }] },
       });
     }),
@@ -294,10 +304,17 @@ test("an input's issues come back only from tRPC's own input parse, never from a
   });
   const run = runner(router);
 
-  expect(await run("carrier", { name: 7 })).toMatchObject({
-    details: { issues: [{ path: ["name"] }] },
+  const refused = await run("carrier", { name: 7, note: 8 });
+  expect(refused).toMatchObject({
+    details: { issues: [{ path: ["name"] }, { path: ["note"] }] },
   });
-  expect(await run("conflict", undefined)).toEqual({ refusal: "Bestaat al" });
+  expect("refusal" in refused && refused.refusal).toBe(
+    "Invalid input: expected string, received number",
+  );
+  expect(ran).toEqual([]);
+  expect(await run("carrier", { name: "dhl" })).toEqual({ value: 1 });
+  expect(ran).toEqual(["carrier"]);
+  expect(await run("thrown", undefined)).toEqual({ refusal: "Ongeldige order" });
   expect(await run("both", undefined)).toEqual({ refusal: "Nee", details: { opties: ["a"] } });
 });
 

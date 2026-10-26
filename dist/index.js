@@ -806,7 +806,13 @@ function fromTrpcRouter(router, options) {
 	* for a router of unknown shape, so the path is walked by property access,
 	* the one question it answers.
 	*/
-	const run = async (actor, path, input, signal) => {
+	const run = async (actor, path, parsers, input, signal) => {
+		const issues = await inputIssues(parsers, input);
+		const message = issues[0]?.["message"];
+		if (issues.length > 0) return {
+			refusal: typeof message === "string" ? message : "",
+			details: { issues }
+		};
 		let target = router.createCaller(await options.contextFor(actor), { signal });
 		for (const segment of path.split(".")) target = Object(target)[segment];
 		if (typeof target !== "function") throw new Error(`The tRPC caller has no procedure at "${path}"`);
@@ -814,7 +820,7 @@ function fromTrpcRouter(router, options) {
 			return { value: toJson(await target(input)) };
 		} catch (error) {
 			if (!isRefusal(error)) return { failed: error };
-			const details = detailsOf(error);
+			const details = detailsOf(error.cause);
 			return details === void 0 ? { refusal: error.message } : {
 				refusal: error.message,
 				details
@@ -847,7 +853,7 @@ function fromTrpcRouter(router, options) {
 			description: definition.description,
 			input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,
 			output: definition.output === void 0 ? void 0 : describeSchema(definition.output, owner),
-			run: (actor, input, signal) => run(actor, path, input, signal)
+			run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal)
 		});
 	}
 	return catalogue(declared, skipped);
@@ -889,21 +895,46 @@ function isRefusal(error) {
 	return error instanceof Error && error.name === "TRPCError" && hasKey(error, "code") && error.code !== "INTERNAL_SERVER_ERROR";
 }
 /**
-* The structured details of a refusal, as data beside its sentence: the
-* cause's own `details` object (the convention a program's refusal follows,
-* such as `{ opties: [...] }`), and nothing else of the cause, since a cause
-* is whatever object the program attached; or, for tRPC's own input parse (a
-* `BAD_REQUEST` whose cause carries the parser's `issues` and no `details`),
-* those issues. Reading them never throws: a cause that cannot be read gives
-* none, and the refusal's sentence still reaches the agent.
+* The issues the procedure's own input schemas find in `input`, each schema
+* asked through Standard Schema's `validate` as tRPC itself asks it, so a
+* refused input answers every issue as data and the program never runs. A
+* parser that is no Standard Schema, or whose `validate` throws, is left to
+* tRPC's own parse, whose refusal then comes back as its sentence alone.
 */
-function detailsOf(error) {
+async function inputIssues(parsers, input) {
+	const issues = [];
+	for (const parser of parsers) {
+		const standard = hasKey(parser, "~standard") ? parser["~standard"] : void 0;
+		if (!hasKey(standard, "validate") || typeof standard.validate !== "function") continue;
+		let result;
+		try {
+			result = await standard.validate(input);
+		} catch {
+			continue;
+		}
+		if (!hasKey(result, "issues") || !Array.isArray(result.issues)) continue;
+		for (const issue of result.issues) {
+			const json = boundedJson(issue);
+			if (isJsonObject(json)) issues.push(json);
+		}
+	}
+	return issues;
+}
+/**
+* A refusal's structured details, as data beside its sentence: its cause's
+* own `details` object (the convention a program's refusal follows, such as
+* `{ opties: [...] }`), and nothing else of the cause, since a cause is
+* whatever object the program attached. Reading it never throws: a cause that
+* cannot be read gives none, and the refusal's sentence still reaches the
+* agent.
+*/
+function detailsOf(cause) {
 	try {
-		const cause = error.cause;
 		const details = hasKey(cause, "details") ? boundedJson(cause.details) : void 0;
-		if (isJsonObject(details)) return details;
-		if (error.code === "BAD_REQUEST" && !hasKey(cause, "details") && hasKey(cause, "issues") && Array.isArray(cause.issues)) return { issues: boundedJson(cause.issues) };
-	} catch {}
+		return isJsonObject(details) ? details : void 0;
+	} catch {
+		return;
+	}
 }
 /** The narrowing every read of a tRPC internal goes through. */
 function hasKey(value, key) {

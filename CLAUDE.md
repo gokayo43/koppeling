@@ -62,9 +62,6 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   them the same way, and `src/adapters/trpc.ts` checks their shape and fails the
   boot when a release moves them. Re-run the suite on every tRPC bump. A router
   with lazy sub-routers fails the boot: their procedures exist only once loaded.
-  An input's issues are recognised the same way: tRPC's input parse throws a
-  `BAD_REQUEST` whose cause is the parser's error with its `issues`. A
-  program's own refusal gives details only as its cause's `details` object.
 - **Never read Elysia's `app.models`**: in 1.4.30 that getter compiles a
   validator for every model on each read. The nfp-elysia mount measured 7.4 to
   8.8 s per read against its 984 named-model references, about two hours of

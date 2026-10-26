@@ -9,7 +9,7 @@ import {
   type Note,
   type Outcome,
 } from "../catalogue";
-import { boundedJson, isJsonObject, toJson, type Json } from "../json";
+import { boundedJson, isJsonObject, toJson, type Json, type JsonObject } from "../json";
 import { allOf, describeSchema, type Described } from "../schema";
 
 export interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
@@ -46,9 +46,15 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
   const run = async (
     actor: Actor,
     path: string,
+    parsers: readonly unknown[],
     input: Json | undefined,
     signal: AbortSignal,
   ): Promise<Outcome> => {
+    const issues = await inputIssues(parsers, input);
+    const message = issues[0]?.["message"];
+    if (issues.length > 0) {
+      return { refusal: typeof message === "string" ? message : "", details: { issues } };
+    }
     let target: unknown = router.createCaller(await options.contextFor(actor), { signal });
     for (const segment of path.split(".")) {
       // oxlint-disable-next-line typescript/no-unsafe-member-access -- the caller proxy, walked by the path tRPC itself named
@@ -64,7 +70,7 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       return { value: toJson(answer) };
     } catch (error) {
       if (!isRefusal(error)) return { failed: error };
-      const details = detailsOf(error);
+      const details = detailsOf(error.cause);
       return details === undefined
         ? { refusal: error.message }
         : { refusal: error.message, details };
@@ -91,7 +97,7 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,
       output:
         definition.output === undefined ? undefined : describeSchema(definition.output, owner),
-      run: (actor, input, signal) => run(actor, path, input, signal),
+      run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal),
     });
   }
   return catalogue(declared, skipped);
@@ -161,7 +167,7 @@ function procedureDefinitions(router: AnyTRPCRouter): [string, ProcedureDefiniti
  * class, so the door imports nothing from tRPC at run time.
  */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever a procedure threw
-function isRefusal(error: unknown): error is Error & { readonly code: unknown } {
+function isRefusal(error: unknown): error is Error {
   return (
     error instanceof Error &&
     error.name === "TRPCError" &&
@@ -171,31 +177,52 @@ function isRefusal(error: unknown): error is Error & { readonly code: unknown } 
 }
 
 /**
- * The structured details of a refusal, as data beside its sentence: the
- * cause's own `details` object (the convention a program's refusal follows,
- * such as `{ opties: [...] }`), and nothing else of the cause, since a cause
- * is whatever object the program attached; or, for tRPC's own input parse (a
- * `BAD_REQUEST` whose cause carries the parser's `issues` and no `details`),
- * those issues. Reading them never throws: a cause that cannot be read gives
- * none, and the refusal's sentence still reaches the agent.
+ * The issues the procedure's own input schemas find in `input`, each schema
+ * asked through Standard Schema's `validate` as tRPC itself asks it, so a
+ * refused input answers every issue as data and the program never runs. A
+ * parser that is no Standard Schema, or whose `validate` throws, is left to
+ * tRPC's own parse, whose refusal then comes back as its sentence alone.
  */
-function detailsOf(error: Error & { readonly code: unknown }): Json | undefined {
-  try {
-    const cause = error.cause;
-    const details = hasKey(cause, "details") ? boundedJson(cause.details) : undefined;
-    if (isJsonObject(details)) return details;
-    if (
-      error.code === "BAD_REQUEST" &&
-      !hasKey(cause, "details") &&
-      hasKey(cause, "issues") &&
-      Array.isArray(cause.issues)
-    ) {
-      return { issues: boundedJson(cause.issues) };
+async function inputIssues(
+  parsers: readonly unknown[],
+  input: Json | undefined,
+): Promise<JsonObject[]> {
+  const issues: JsonObject[] = [];
+  for (const parser of parsers) {
+    const standard = hasKey(parser, "~standard") ? parser["~standard"] : undefined;
+    if (!hasKey(standard, "validate") || typeof standard.validate !== "function") continue;
+    let result: unknown;
+    try {
+      // oxlint-disable-next-line typescript/no-unsafe-call -- Standard Schema's validate, checked to be a function
+      result = await standard.validate(input);
+    } catch {
+      continue;
     }
+    if (!hasKey(result, "issues") || !Array.isArray(result.issues)) continue;
+    for (const issue of result.issues) {
+      const json = boundedJson(issue);
+      if (isJsonObject(json)) issues.push(json);
+    }
+  }
+  return issues;
+}
+
+/**
+ * A refusal's structured details, as data beside its sentence: its cause's
+ * own `details` object (the convention a program's refusal follows, such as
+ * `{ opties: [...] }`), and nothing else of the cause, since a cause is
+ * whatever object the program attached. Reading it never throws: a cause that
+ * cannot be read gives none, and the refusal's sentence still reaches the
+ * agent.
+ */
+function detailsOf(cause: unknown): Json | undefined {
+  try {
+    const details = hasKey(cause, "details") ? boundedJson(cause.details) : undefined;
+    return isJsonObject(details) ? details : undefined;
   } catch {
     // A getter that throws, or a proxy that refuses to be read: no details.
+    return undefined;
   }
-  return undefined;
 }
 
 /** The narrowing every read of a tRPC internal goes through. */
