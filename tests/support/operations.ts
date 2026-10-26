@@ -17,7 +17,10 @@ export function sketched(sketches: readonly Sketch[], ran: string[] = []): Catal
       name: sketch.name,
       area: sketch.area ?? firstSegment(sketch.name),
       kind: sketch.kind ?? "read",
-      description: sketch.description,
+      description: sketch.description ?? sketch.name,
+      written: sketch.description !== undefined,
+      destructive: sketch.kind === "write",
+      idempotent: sketch.kind !== "write",
       input: {
         schema: {
           type: "object",

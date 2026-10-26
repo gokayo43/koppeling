@@ -6,6 +6,16 @@
 
 const quoted = (names: readonly string[]) => names.map((name) => `"${name}"`).join(", ");
 
+/** What an operation does, by its kind or its HTTP method, as its derived line opens. */
+const ACTIONS = {
+  read: "Leest",
+  post: "Stuurt",
+  put: "Vervangt",
+  patch: "Wijzigt",
+  delete: "Verwijdert",
+  run: "Voert uit",
+} as const;
+
 export const copy = {
   tools: {
     list: {
@@ -63,6 +73,12 @@ export const copy = {
     `Onbekende operatie "${name}". Kies eerst een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
   nothingFound: (words: string, areas: readonly string[]) =>
     `Geen operatie gevonden bij "${words}". Kies een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
+  derivedLine: (
+    action: "read" | "post" | "put" | "patch" | "delete" | "run",
+    name: string,
+    fields: readonly string[],
+  ) => `${ACTIONS[action]}: ${name}.${fields.length ? ` Invoer: ${fields.join(", ")}.` : ""}`,
+  andMore: (count: number) => `en ${count} meer`,
   internalError: "Er is een interne fout opgetreden.",
   glossaryTerms: (terms: readonly string[]) => `Termen: ${terms.join(", ")}.`,
   glossaryLeftOut: (headings: readonly string[]) =>

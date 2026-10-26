@@ -1,7 +1,7 @@
 export { fromElysia, type ElysiaOptions } from "./adapters/elysia";
 export { fromTrpcRouter, type TrpcOptions } from "./adapters/trpc";
 export type { Identity } from "./auth";
-export type { Catalogue, Kind, Note, Operation, Outcome } from "./catalogue";
+export type { Catalogue, Kind, KoppelingMeta, Note, Operation, Outcome } from "./catalogue";
 export {
   koppeling,
   type ActorDecision,

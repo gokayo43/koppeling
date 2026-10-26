@@ -4,11 +4,13 @@ import {
   catalogue,
   firstSegment,
   type Catalogue,
+  koppelingMeta,
   type Declared,
   type Kind,
   type Note,
   type Outcome,
 } from "../catalogue";
+import { derivedLine, fieldNames } from "../derived";
 import { boundedJson, isJsonObject, toJson, type Json, type JsonObject } from "../json";
 import { allOf, describeSchema, type Described } from "../schema";
 
@@ -31,7 +33,9 @@ function kindOf(type: string): Kind | undefined {
 
 /**
  * The catalogue of a tRPC v11 router: every query and mutation, named by its
- * path. Subscriptions and the procedures the program withholds from the door
+ * path. A mutation is destructive and not idempotent, a query neither
+ * destroys nor repeats anything, unless `meta.koppeling` says otherwise.
+ * Subscriptions and the procedures the program withholds from the door
  * (`meta.koppeling: false`) are skipped and named in the boot report.
  */
 export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
@@ -84,17 +88,31 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       skipped.push({ name: path, reason: `${definition.type}, which the door does not serve` });
       continue;
     }
-    if (definition.withheld) {
+    const owner = `tRPC procedure "${path}"`;
+    const meta = koppelingMeta(definition.koppeling, `${owner}: meta.koppeling`);
+    if (meta === "withheld") {
       skipped.push({ name: path, reason: "withheld by the program" });
       continue;
     }
-    const owner = `tRPC procedure "${path}"`;
+    const described =
+      allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT;
+    const write = kind === "write";
+    const written = meta.description ?? definition.description;
     declared.push({
       name: path,
       area: firstSegment(path),
       kind,
-      description: definition.description,
-      input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,
+      description:
+        written ??
+        derivedLine(
+          write ? "run" : "read",
+          path,
+          "schema" in described ? fieldNames(described.schema) : [],
+        ),
+      written: written !== undefined,
+      destructive: meta.destructive ?? write,
+      idempotent: meta.idempotent ?? !write,
+      input: described,
       output:
         definition.output === undefined ? undefined : describeSchema(definition.output, owner),
       run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal),
@@ -108,8 +126,8 @@ interface ProcedureDefinition {
   readonly inputs: readonly unknown[];
   readonly output: unknown;
   readonly description: string | undefined;
-  /** `meta.koppeling === false`: the program keeps this procedure from the door. */
-  readonly withheld: boolean;
+  /** `meta.koppeling`, as the program wrote it. */
+  readonly koppeling: unknown;
 }
 
 /**
@@ -154,7 +172,7 @@ function procedureDefinitions(router: AnyTRPCRouter): [string, ProcedureDefiniti
         output: hasKey(def, "output") ? def.output : undefined,
         description:
           typeof description === "string" && description.trim() ? description.trim() : undefined,
-        withheld: hasKey(meta, "koppeling") && meta.koppeling === false,
+        koppeling: hasKey(meta, "koppeling") ? meta.koppeling : undefined,
       },
     ];
   });
@@ -182,6 +200,11 @@ function isRefusal(error: unknown): error is Error {
  * refused input answers every issue as data and the program never runs. A
  * parser that is no Standard Schema, or whose `validate` throws, is left to
  * tRPC's own parse, whose refusal then comes back as its sentence alone.
+ *
+ * This runs before the procedure's own chain, its authorization included, on
+ * purpose: every caller already holds a token for this door, and `describe`
+ * shows that same input schema to every such caller, so the issues reveal
+ * nothing the schema does not.
  */
 async function inputIssues(
   parsers: readonly unknown[],

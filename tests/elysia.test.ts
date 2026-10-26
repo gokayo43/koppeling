@@ -204,7 +204,64 @@ test("summary and description become the operation's line and its detail", () =>
   expect(operation("vehicles.lookup.get").description).toBe(
     "License plate vehicle lookup\nResolves a Dutch license plate to its vehicle.",
   );
-  expect(operation("orders.fail.get").description).toBeUndefined();
+  expect(operation("vehicles.lookup.get").written).toBe(true);
+});
+
+test("a route's hints follow its method, and detail.koppeling overrides them", () => {
+  // The likeliest wrong derivation treats every write alike, so a DELETE reads
+  // as safe to retry blindly and a PUT as not.
+  const app = new Elysia({ prefix: "/api" })
+    .get("/stock", () => 1)
+    .put("/stock", () => 1)
+    .delete("/stock", () => 1)
+    .post("/stock", () => 1)
+    .patch("/stock", () => 1)
+    .post("/refunds", () => 1, { detail: { koppeling: { destructive: true } } });
+  const hints = fromElysia(app, { credential, mount: "/api" }).operations.map(
+    ({ name, destructive, idempotent }) => [name, destructive, idempotent],
+  );
+
+  expect(hints).toEqual([
+    ["refunds.post", true, false],
+    ["stock.delete", true, true],
+    ["stock.get", false, true],
+    ["stock.patch", false, false],
+    ["stock.post", false, false],
+    ["stock.put", false, true],
+  ]);
+  expect(() =>
+    fromElysia(
+      new Elysia().post("/api/x", () => 1, {
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- a detail its type forbids, on purpose
+        detail: Object({ koppeling: { hint: 1 } }),
+      }),
+      {
+        credential,
+        mount: "/api",
+      },
+    ),
+  ).toThrow("Elysia route POST /api/x: detail.koppeling");
+});
+
+test("a route without a summary gets one line from its path's words and its input's fields; a written one wins", () => {
+  const app = new Elysia({ prefix: "/api/v1" })
+    .put("/admin/products/:id", () => 1, {
+      params: t.Object({ id: t.Numeric() }),
+      body: t.Object({ name: t.String(), price: t.Number(), sku: t.String() }),
+    })
+    .get("/product-categories", () => [])
+    .delete("/notes/:id", () => 1, {
+      detail: { summary: "Remove a note", koppeling: { description: "Verwijdert een notitie." } },
+    });
+  const described = fromElysia(app, { credential, mount: "/api/v1" }).operations.map(
+    ({ name, description, written }) => [name, description, written],
+  );
+
+  expect(described).toEqual([
+    ["admin.products.id.put", "Vervangt: admin products id. Invoer: id, name, price, sku.", false],
+    ["notes.id.delete", "Verwijdert een notitie.", true],
+    ["product-categories.get", "Leest: product categories.", false],
+  ]);
 });
 
 test("a guard's schema is composed with the route's own", () => {

@@ -3,12 +3,15 @@ import type { AnyElysia } from "elysia";
 import {
   catalogue,
   firstSegment,
+  koppelingMeta,
   type Catalogue,
+  type KoppelingMeta,
   type Declared,
   type Note,
   type Outcome,
 } from "../catalogue";
 import { copy } from "../copy";
+import { derivedLine, fieldNames, type Action } from "../derived";
 import {
   isJsonArray,
   isJsonObject,
@@ -21,8 +24,11 @@ import { allOf, describeSchema, TYPEBOX_KIND, type Described } from "../schema";
 
 declare module "elysia" {
   interface DocumentDecoration {
-    /** `false` keeps this route from the koppeling: the door skips it and names it in its boot report. */
-    koppeling?: boolean;
+    /**
+     * What the route says to the koppeling, over what the door derives; `false`
+     * keeps the route from it, and the door names it in its boot report.
+     */
+    koppeling?: false | KoppelingMeta;
   }
 }
 
@@ -72,7 +78,9 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       continue;
     }
     const detail = field(hooks, "detail");
-    if (field(detail, "koppeling") === false) {
+    const owner = `Elysia route ${route.method} ${route.path}`;
+    const meta = koppelingMeta(field(detail, "koppeling"), `${owner}: detail.koppeling`);
+    if (meta === "withheld") {
       skipped.push({ name, reason: "withheld by the program" });
       continue;
     }
@@ -84,7 +92,6 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       skipped.push({ name, reason: `the mount itself, which names no area` });
       continue;
     }
-    const owner = `Elysia route ${route.method} ${route.path}`;
     const method = route.method;
     const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
     schemas.set("params", schemas.get("params") ?? pathParameters(segments));
@@ -93,7 +100,8 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       name,
       area: options.area?.(named) ?? firstSegment(name),
       kind: method === "GET" || method === "HEAD" ? "read" : "write",
-      description: description(hooks),
+      ...lineOf(meta.description ?? description(hooks), method, named, schemas),
+      ...hints(method, meta),
       input: inputSchema(schemas, carriesBody(method)),
       output: responseSchema(app, hooks, owner),
       run: (actor, input, signal) =>
@@ -106,6 +114,54 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
     });
   }
   return catalogue(declared, skipped);
+}
+
+/**
+ * What a method says about a route, the HTTP way: GET and HEAD change
+ * nothing, PUT replaces and DELETE deletes, each to the same end however
+ * often, and POST and PATCH may change more each time. Any other method is
+ * taken to be the riskiest; `detail.koppeling` overrides either hint.
+ */
+function hints(method: string, meta: KoppelingMeta) {
+  const safe = method === "GET" || method === "HEAD";
+  const derived =
+    safe || method === "PUT" || method === "DELETE" || method === "POST" || method === "PATCH"
+      ? {
+          destructive: method === "DELETE",
+          idempotent: safe || method === "PUT" || method === "DELETE",
+        }
+      : { destructive: true, idempotent: false };
+  return {
+    destructive: meta.destructive ?? derived.destructive,
+    idempotent: meta.idempotent ?? derived.idempotent,
+  };
+}
+
+const ACTIONS = new Map<string, Action>([
+  ["GET", "read"],
+  ["HEAD", "read"],
+  ["POST", "post"],
+  ["PUT", "put"],
+  ["PATCH", "patch"],
+  ["DELETE", "delete"],
+]);
+
+/** The route's written line, or the door's from its path's words and its declared fields. */
+function lineOf(
+  written: string | undefined,
+  method: string,
+  named: readonly string[],
+  schemas: ReadonlyMap<Part, Described | undefined>,
+) {
+  if (written !== undefined) return { description: written, written: true };
+  const fields = PARTS.flatMap((part) => {
+    const schema = schemas.get(part);
+    return schema !== undefined && "schema" in schema ? fieldNames(schema.schema) : [];
+  });
+  return {
+    description: derivedLine(ACTIONS.get(method) ?? "run", named.join("."), [...new Set(fields)]),
+    written: false,
+  };
 }
 
 function nameSegment(segment: string): string {

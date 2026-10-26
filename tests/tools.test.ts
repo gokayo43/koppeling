@@ -102,17 +102,29 @@ test("list without an area answers the areas; with an exact one, its operations"
       {
         name: "printer.printBarcodeLabel",
         kind: "write",
+        destructive: true,
+        idempotent: false,
         summary: "Print een barcodelabel met een vrije tekst.",
       },
       {
         name: "printer.printBatchStickers",
         kind: "write",
+        destructive: true,
+        idempotent: false,
         summary: "Print stickers voor meerdere sku's tegelijk.",
       },
-      { name: "printer.printShelve", kind: "write", summary: "Print het label van een plank." },
+      {
+        name: "printer.printShelve",
+        kind: "write",
+        destructive: true,
+        idempotent: false,
+        summary: "Print het label van een plank.",
+      },
       {
         name: "printer.printSticker",
         kind: "write",
+        destructive: true,
+        idempotent: false,
         summary: "Print een productsticker voor een sku.",
       },
       {
@@ -154,6 +166,8 @@ test("describe answers the whole operation, its side-effect line included", asyn
     name: "counting.countRow",
     area: "counting",
     kind: "write",
+    destructive: true,
+    idempotent: false,
     sideEffect: "de voorraad van die plank wordt de telling.",
     input: {
       type: "object",
@@ -168,6 +182,36 @@ test("describe answers the whole operation, its side-effect line included", asyn
   expect(bySku.structuredContent).toMatchObject({
     sideEffect: null,
     output: { type: "object", required: ["sku", "total", "shelves"] },
+  });
+});
+
+test("an operation the program wrote no line for is described by the door's line, and listed with it", async () => {
+  await using door = await connected(apiDirectory(), apiCaller);
+  const described = await door.client.callTool({
+    name: "describe",
+    arguments: { name: "product-categories.id.get" },
+  });
+  const listed = await door.client.callTool({
+    name: "list",
+    arguments: { area: "product-categories" },
+  });
+
+  expect(described.structuredContent).toMatchObject({
+    kind: "read",
+    destructive: false,
+    idempotent: true,
+    description: "Leest: product categories id. Invoer: id.",
+  });
+  expect(listed.structuredContent).toEqual({
+    area: "product-categories",
+    operations: [
+      { name: "product-categories.get", kind: "read", summary: "Leest: product categories." },
+      {
+        name: "product-categories.id.get",
+        kind: "read",
+        summary: "Leest: product categories id. Invoer: id.",
+      },
+    ],
   });
 });
 

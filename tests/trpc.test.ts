@@ -13,13 +13,16 @@ import {
 } from "fast-check";
 import { z } from "zod";
 
-import { fromTrpcRouter, type Json } from "../src/index";
+import { fromTrpcRouter, type Json, type KoppelingMeta } from "../src/index";
 import { contextFor, warehouseRouter } from "./fixtures/warehouse";
 
 /** A signal no case aborts, for a run the case lets finish. */
 const unaborted = new AbortController().signal;
 
-const t = initTRPC.context<object>().meta<{ description?: string; koppeling?: boolean }>().create();
+const t = initTRPC
+  .context<object>()
+  .meta<{ description?: string; koppeling?: false | KoppelingMeta }>()
+  .create();
 const MCP_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 
 type Kind = "query" | "mutation" | "subscription";
@@ -134,10 +137,11 @@ test("each schema language's input becomes JSON Schema, and meta.description bec
 
   expect(byName.get("effect")).toMatchObject({
     description: "Effect input.",
+    written: true,
     input: { type: "object", required: ["orderId"] },
   });
   expect(byName.get("zod")).toMatchObject({
-    description: undefined,
+    written: false,
     input: { type: "object", required: ["name"] },
   });
   expect(byName.get("none")?.input).toEqual({
@@ -371,3 +375,69 @@ function runner(router: AnyTRPCRouter) {
     return found.run(null, input, unaborted);
   };
 }
+
+test("a query neither destroys nor repeats anything, a mutation is destructive and not idempotent, and meta.koppeling overrides either", () => {
+  // The likeliest wrong derivation calls a mutation harmless, so an agent
+  // retries a payment; the override is the program's word on its own write.
+  const router = t.router({
+    stock: t.procedure.query(() => 1),
+    ship: t.procedure.mutation(() => 1),
+    setStatus: t.procedure
+      .meta({ koppeling: { destructive: false, idempotent: true } })
+      .mutation(() => 1),
+    purge: t.procedure.meta({ koppeling: { idempotent: true } }).mutation(() => 1),
+    secret: t.procedure.meta({ koppeling: false }).mutation(() => 1),
+  });
+  const hints = fromTrpcRouter(router, { contextFor: () => ({}) }).operations.map(
+    ({ name, destructive, idempotent }) => [name, destructive, idempotent],
+  );
+
+  expect(hints).toEqual([
+    ["purge", true, true],
+    ["setStatus", false, true],
+    ["ship", true, false],
+    ["stock", false, true],
+  ]);
+});
+
+test("a meta.koppeling that is neither false nor an object of the door's hints fails the boot, naming the procedure", () => {
+  // A misspelled hint the door ignored would leave a write described wrongly
+  // with nothing to say so.
+  for (const koppeling of [{ destructve: false }, { idempotent: "yes" }, true, "nee"]) {
+    const router = t.router({
+      // oxlint-disable-next-line typescript/no-unsafe-argument -- a meta its type forbids, on purpose
+      ship: t.procedure.meta(Object({ koppeling })).mutation(() => 1),
+    });
+    expect(() => fromTrpcRouter(router, { contextFor: () => ({}) })).toThrow(
+      'tRPC procedure "ship": meta.koppeling',
+    );
+  }
+});
+
+test("a procedure without a description gets one line from its name's words and its input's fields; a written one wins", () => {
+  const router = t.router({
+    orders: t.router({
+      claimPicking: t.procedure.input(z.object({ orderId: z.number() })).mutation(() => 1),
+      shippingQueue: t.procedure.query(() => []),
+      list: t.procedure
+        .meta({ description: "De orders die nog gepickt moeten worden." })
+        .query(() => []),
+      ship: t.procedure
+        .meta({
+          description: "Verzendt een order.",
+          koppeling: { description: "Verzendt een gepickte order en print het label." },
+        })
+        .mutation(() => 1),
+    }),
+  });
+  const described = fromTrpcRouter(router, { contextFor: () => ({}) }).operations.map(
+    ({ name, description, written }) => [name, description, written],
+  );
+
+  expect(described).toEqual([
+    ["orders.claimPicking", "Voert uit: orders claim picking. Invoer: orderId.", false],
+    ["orders.list", "De orders die nog gepickt moeten worden.", true],
+    ["orders.ship", "Verzendt een gepickte order en print het label.", true],
+    ["orders.shippingQueue", "Leest: orders shipping queue.", false],
+  ]);
+});

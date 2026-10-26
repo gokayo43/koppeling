@@ -13,29 +13,35 @@ const answer = (structured: JsonObject): Answer => ({
   structured,
 });
 
-function summaryLine(operation: Operation<never>): string | null {
-  return operation.description?.split("\n", 1)[0] ?? null;
+/**
+ * One operation as `list` and `find` show it: a write with its hints, since a
+ * read changes nothing whichever way they read.
+ */
+function entry(operation: Operation<never>) {
+  const { name, kind, destructive, idempotent, description } = operation;
+  return {
+    name,
+    kind,
+    ...(kind === "write" ? { destructive, idempotent } : {}),
+    summary: description.split("\n", 1)[0] ?? "",
+  };
 }
 
 function list(directory: Directory<never>, area: string | undefined): Answer {
   if (area === undefined) {
     return answer({
-      areas: Array.from(directory.areas.values(), (entry) => ({
-        name: entry.name,
-        summary: entry.summary,
-        operations: entry.operations.length,
+      areas: Array.from(directory.areas.values(), (each) => ({
+        name: each.name,
+        summary: each.summary,
+        operations: each.operations.length,
       })),
     });
   }
-  const entry = directory.areas.get(area);
-  if (entry === undefined) return refusal(copy.unknownArea(area, [...directory.areas.keys()]));
+  const found = directory.areas.get(area);
+  if (found === undefined) return refusal(copy.unknownArea(area, [...directory.areas.keys()]));
   return answer({
-    area: entry.name,
-    operations: entry.operations.map((operation) => ({
-      name: operation.name,
-      kind: operation.kind,
-      summary: summaryLine(operation),
-    })),
+    area: found.name,
+    operations: found.operations.map(entry),
   });
 }
 
@@ -49,8 +55,10 @@ function describe(directory: Directory<never>, name: string): Answer {
     name: operation.name,
     area: operation.area,
     kind: operation.kind,
-    description: operation.description ?? null,
-    sideEffect: operation.description?.match(SIDE_EFFECT)?.[1] ?? null,
+    destructive: operation.destructive,
+    idempotent: operation.idempotent,
+    description: operation.description,
+    sideEffect: operation.description.match(SIDE_EFFECT)?.[1] ?? null,
     input: operation.input,
     output: operation.output ?? null,
   });
@@ -68,12 +76,7 @@ function findAnswer(directory: Directory<never>, words: string): Answer {
     });
   }
   return answer({
-    operations: found.map((operation) => ({
-      name: operation.name,
-      area: operation.area,
-      kind: operation.kind,
-      summary: summaryLine(operation),
-    })),
+    operations: found.map((operation) => ({ ...entry(operation), area: operation.area })),
   });
 }
 

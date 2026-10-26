@@ -273,6 +273,15 @@ function resolve(reference, scope) {
 * passed through as the host wrote them.
 */
 const quoted = (names) => names.map((name) => `"${name}"`).join(", ");
+/** What an operation does, by its kind or its HTTP method, as its derived line opens. */
+const ACTIONS$1 = {
+	read: "Leest",
+	post: "Stuurt",
+	put: "Vervangt",
+	patch: "Wijzigt",
+	delete: "Verwijdert",
+	run: "Voert uit"
+};
 const copy = {
 	tools: {
 		list: {
@@ -315,6 +324,8 @@ const copy = {
 	unknownOperation: (name, names) => `Onbekende operatie "${name}". Kies een naam uit deze lijst: ${quoted(names)}.`,
 	unknownOperationArea: (name, areas) => `Onbekende operatie "${name}". Kies eerst een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
 	nothingFound: (words, areas) => `Geen operatie gevonden bij "${words}". Kies een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
+	derivedLine: (action, name, fields) => `${ACTIONS$1[action]}: ${name}.${fields.length ? ` Invoer: ${fields.join(", ")}.` : ""}`,
+	andMore: (count) => `en ${count} meer`,
 	internalError: "Er is een interne fout opgetreden.",
 	glossaryTerms: (terms) => `Termen: ${terms.join(", ")}.`,
 	glossaryLeftOut: (headings) => `Niet opgenomen, wegens de lengte: ${headings.join(", ")}.`,
@@ -337,6 +348,33 @@ const copy = {
 };
 //#endregion
 //#region src/catalogue.ts
+const META_KEYS = /* @__PURE__ */ new Set([
+	"description",
+	"destructive",
+	"idempotent"
+]);
+/**
+* A procedure's or route's `koppeling` value: `withheld` for `false`, what it
+* says otherwise. Anything but `false`, nothing or an object of the door's
+* own keys fails the boot, naming `owner`: a misspelled hint the door ignored
+* would describe the operation wrongly with nothing to say so.
+*/
+function koppelingMeta(value, owner) {
+	if (value === false) return "withheld";
+	if (value === void 0) return {};
+	const fail = (why) => /* @__PURE__ */ new Error(`${owner} ${why}; it is false, or an object of description (text), destructive and idempotent (true or false)`);
+	if (typeof value !== "object" || value === null || Array.isArray(value)) throw fail(`is ${JSON.stringify(value)}`);
+	const meta = {};
+	for (const [key, given] of Object.entries(value)) {
+		if (!META_KEYS.has(key)) throw fail(`names "${key}"`);
+		if (key === "description" && typeof given === "string") {
+			if (given.trim()) meta.description = given.trim();
+		} else if (key === "destructive" && typeof given === "boolean") meta.destructive = given;
+		else if (key === "idempotent" && typeof given === "boolean") meta.idempotent = given;
+		else throw fail(`gives ${key} as ${JSON.stringify(given)}`);
+	}
+	return meta;
+}
 /** What `describe` shows for a schema the door could not write. */
 const UNDESCRIBED = { description: copy.undescribedSchema };
 /** MCP's name rule, which every operation name is held to. */
@@ -446,6 +484,180 @@ function allOf(parts) {
 	if (only === void 0) return void 0;
 	return { schema: more.length ? { allOf: [only, ...more] } : only };
 }
+/**
+* A schema's properties, its own and those of its `allOf`, `anyOf` and `oneOf`
+* parts, each with its schema: the fields an object of it may carry.
+*/
+function properties(schema) {
+	const own = schema["properties"];
+	const named = isJsonObject(own) ? Object.entries(own).flatMap(([name, child]) => isJsonObject(child) ? [[name, child]] : []) : [];
+	const parts = [
+		"allOf",
+		"anyOf",
+		"oneOf"
+	].flatMap((key) => {
+		const list = schema[key];
+		return isJsonArray(list) ? list.filter(isJsonObject) : [];
+	});
+	return [...named, ...parts.flatMap(properties)];
+}
+/**
+* Words that say nothing about which operation is meant, in the two languages
+* a person here asks in. Without them "welke bestellingen moeten nog" would
+* rank on "moeten" as much as on "bestellingen".
+*/
+const STOPWORDS = new Set("de het een en of van voor op in naar met aan bij uit om over tot als dat die dit deze wat welk welke wie waar hoe hoeveel hebben heeft hebt is zijn was moet moeten mag kan kunnen worden wordt nog al er we wij ik je jij u ons onze mijn alle alles niet geen ook maar dan ander andere staan staat ligt liggen gaat gaan komt komen wil willen graag even nu the a an and or of for on in to with at by from as that this these those what which who where how many much is are was be been has have do does can should must all any not no".split(" "));
+/** How much a word found in each field counts; the name and the description say the most. */
+const WEIGHTS = {
+	name: 3,
+	description: 2,
+	area: 2,
+	input: 1
+};
+const FIELDS = [
+	"name",
+	"description",
+	"area",
+	"input"
+];
+/**
+* What each word counts once more when the words name an area or a leaf of two
+* or more words whole: a phrase that names a thing outweighs the same words
+* met one by one across other names. A one-word name gets nothing extra, since
+* its one word already counted.
+*/
+const WHOLE_WEIGHT = WEIGHTS.name;
+/** The shortest stem a prefix match may take, so "in" does not match "inventory". */
+const MIN_PREFIX = 4;
+/** The shortest shared start that makes two words cousins. */
+const COGNATE_PREFIX = 5;
+/** The words of a text: split on anything but letters and digits and at camelCase humps, lower-cased. */
+function wordsOf(text) {
+	return text.replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2").replaceAll(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+/** The words of a text that say something, stopwords dropped, each reduced to a stem. */
+function stems(text) {
+	return wordsOf(text).filter((word) => !STOPWORDS.has(word)).map(stem);
+}
+/**
+* A light stem for Dutch and English: the past participle's "ge-" and the
+* plural, tense and inflection endings go, so "gepickt" meets "picked",
+* "getelde" meets "tel", "bestellingen" meets "bestelling" and "leveranciers"
+* meets "leverancier".
+*/
+function stem(word) {
+	let base = word.length >= 6 && word.startsWith("ge") ? word.slice(2) : word;
+	for (const ending of [
+		"ingen",
+		"en",
+		"es",
+		"ed",
+		"de",
+		"te",
+		"s",
+		"t",
+		"d",
+		"e"
+	]) if (base.endsWith(ending) && base.length - ending.length >= 3) {
+		base = ending === "ingen" ? `${base.slice(0, -ending.length)}ing` : base.slice(0, -ending.length);
+		break;
+	}
+	return base;
+}
+/**
+* How well a query stem meets an operation's stem: the same; one a prefix of
+* the other; one inside the other (a Dutch compound such as "verzendlabel");
+* or the two sharing most of the shorter one's start, which is how a Dutch
+* word meets its English cousin ("locatie" and "location").
+*/
+function closeness(query, word) {
+	if (query === word) return 1;
+	const [short, long] = query.length <= word.length ? [query, word] : [word, query];
+	if (short.length < MIN_PREFIX) return 0;
+	if (long.startsWith(short)) return .6;
+	if (long.includes(short)) return .4;
+	let shared = 0;
+	while (shared < short.length && short[shared] === long[shared]) shared += 1;
+	return shared >= COGNATE_PREFIX && shared >= short.length * .7 ? .4 : 0;
+}
+/** The index of `operations`, each searched by its name without its area (`leaf`). */
+function searchIndex(operations) {
+	const entries = operations.map(({ operation, leaf }) => ({
+		operation,
+		words: {
+			name: stems(leaf),
+			area: stems(operation.area),
+			description: operation.written ? stems(operation.description) : [],
+			input: stems(fieldNames$1(operation.input).join(" "))
+		}
+	}));
+	const carrying = /* @__PURE__ */ new Map();
+	for (const { words } of entries) for (const word of new Set(FIELDS.flatMap((field) => words[field]))) carrying.set(word, (carrying.get(word) ?? 0) + 1);
+	return {
+		entries,
+		carrying
+	};
+}
+/** The property names of a schema, two levels deep, through its combinations. */
+function fieldNames$1(schema, depth = 0) {
+	if (depth > 2) return [];
+	const own = properties(schema);
+	return [...own.map(([name]) => name), ...own.flatMap(([, child]) => fieldNames$1(child, depth + 1))];
+}
+/**
+* The asked words that name an operation's area or its leaf whole, each of
+* two or more words that were all asked: "product categories list" names the
+* area "product-categories" whole, while it only shares "categories" with
+* "admin.products.categories.get".
+*/
+function namedWhole(own, asked) {
+	const named = /* @__PURE__ */ new Set();
+	for (const words of [own.area, own.name]) if (words.length > 1 && words.every((word) => asked.has(word))) for (const word of words) named.add(word);
+	return named;
+}
+/**
+* The operations whose words best meet `words`, best first, at most
+* {@link FIND_LIMIT}, and none that meets none of them. A word counts in each
+* field it meets, by that field's weight and by how rare its match is among the
+* operations, so a word every operation carries ranks nothing; and once more
+* where it helps name an area or a leaf whole.
+*/
+function find(index, words) {
+	const query = [...new Set(stems(words))];
+	const rarity = (word) => Math.log(1 + index.entries.length / Math.max(index.carrying.get(word) ?? 0, 1));
+	const asked = new Set(query);
+	return index.entries.map(({ operation, words: own }) => {
+		let score = 0;
+		for (const word of query) for (const field of FIELDS) {
+			let best = 0;
+			for (const candidate of own[field]) best = Math.max(best, WEIGHTS[field] * closeness(word, candidate) * rarity(candidate));
+			score += best;
+		}
+		for (const word of namedWhole(own, asked)) score += WHOLE_WEIGHT * rarity(word);
+		return {
+			operation,
+			score
+		};
+	}).filter(({ score }) => score > 0).toSorted((left, right) => right.score - left.score || (left.operation.name < right.operation.name ? -1 : 1)).slice(0, 10).map(({ operation }) => operation);
+}
+//#endregion
+//#region src/derived.ts
+/** How many of the input's field names the derived line carries. */
+const LINE_FIELDS = 8;
+/**
+* The line the door writes for an operation the program wrote none for: what
+* it does, the words of its name and the names of its input's fields, so
+* `admin.products.id.put` with `id, name, price, sku` reads as what it is.
+*/
+function derivedLine(action, name, fields) {
+	const shown = fields.slice(0, LINE_FIELDS);
+	const rest = fields.length - shown.length;
+	return copy.derivedLine(action, wordsOf(name).join(" "), rest > 0 ? [...shown, copy.andMore(rest)] : shown);
+}
+/** The names of a schema's fields, through its combinations, each once. */
+function fieldNames(schema) {
+	return [...new Set(properties(schema).map(([name]) => name))];
+}
 //#endregion
 //#region src/adapters/elysia.ts
 const PARTS = [
@@ -485,7 +697,9 @@ function fromElysia(app, options) {
 			continue;
 		}
 		const detail = field(hooks, "detail");
-		if (field(detail, "koppeling") === false) {
+		const owner = `Elysia route ${route.method} ${route.path}`;
+		const meta = koppelingMeta(field(detail, "koppeling"), `${owner}: detail.koppeling`);
+		if (meta === "withheld") {
 			skipped.push({
 				name,
 				reason: "withheld by the program"
@@ -506,7 +720,6 @@ function fromElysia(app, options) {
 			});
 			continue;
 		}
-		const owner = `Elysia route ${route.method} ${route.path}`;
 		const method = route.method;
 		const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
 		schemas.set("params", schemas.get("params") ?? pathParameters(segments));
@@ -515,7 +728,8 @@ function fromElysia(app, options) {
 			name,
 			area: options.area?.(named) ?? firstSegment(name),
 			kind: method === "GET" || method === "HEAD" ? "read" : "write",
-			description: description(hooks),
+			...lineOf$1(meta.description ?? description(hooks), method, named, schemas),
+			...hints(method, meta),
 			input: inputSchema(schemas, carriesBody(method)),
 			output: responseSchema(app, hooks, owner),
 			run: (actor, input, signal) => request(app, {
@@ -528,6 +742,49 @@ function fromElysia(app, options) {
 		});
 	}
 	return catalogue(declared, skipped);
+}
+/**
+* What a method says about a route, the HTTP way: GET and HEAD change
+* nothing, PUT replaces and DELETE deletes, each to the same end however
+* often, and POST and PATCH may change more each time. Any other method is
+* taken to be the riskiest; `detail.koppeling` overrides either hint.
+*/
+function hints(method, meta) {
+	const safe = method === "GET" || method === "HEAD";
+	const derived = safe || method === "PUT" || method === "DELETE" || method === "POST" || method === "PATCH" ? {
+		destructive: method === "DELETE",
+		idempotent: safe || method === "PUT" || method === "DELETE"
+	} : {
+		destructive: true,
+		idempotent: false
+	};
+	return {
+		destructive: meta.destructive ?? derived.destructive,
+		idempotent: meta.idempotent ?? derived.idempotent
+	};
+}
+const ACTIONS = /* @__PURE__ */ new Map([
+	["GET", "read"],
+	["HEAD", "read"],
+	["POST", "post"],
+	["PUT", "put"],
+	["PATCH", "patch"],
+	["DELETE", "delete"]
+]);
+/** The route's written line, or the door's from its path's words and its declared fields. */
+function lineOf$1(written, method, named, schemas) {
+	if (written !== void 0) return {
+		description: written,
+		written: true
+	};
+	const fields = PARTS.flatMap((part) => {
+		const schema = schemas.get(part);
+		return schema !== void 0 && "schema" in schema ? fieldNames(schema.schema) : [];
+	});
+	return {
+		description: derivedLine(ACTIONS.get(method) ?? "run", named.join("."), [...new Set(fields)]),
+		written: false
+	};
 }
 function nameSegment(segment) {
 	return segment.replace(/^:/, "").replace(/\?$/, "").replaceAll(/[^A-Za-z0-9_-]/g, "_");
@@ -797,7 +1054,9 @@ function kindOf(type) {
 }
 /**
 * The catalogue of a tRPC v11 router: every query and mutation, named by its
-* path. Subscriptions and the procedures the program withholds from the door
+* path. A mutation is destructive and not idempotent, a query neither
+* destroys nor repeats anything, unless `meta.koppeling` says otherwise.
+* Subscriptions and the procedures the program withholds from the door
 * (`meta.koppeling: false`) are skipped and named in the boot report.
 */
 function fromTrpcRouter(router, options) {
@@ -838,20 +1097,27 @@ function fromTrpcRouter(router, options) {
 			});
 			continue;
 		}
-		if (definition.withheld) {
+		const owner = `tRPC procedure "${path}"`;
+		const meta = koppelingMeta(definition.koppeling, `${owner}: meta.koppeling`);
+		if (meta === "withheld") {
 			skipped.push({
 				name: path,
 				reason: "withheld by the program"
 			});
 			continue;
 		}
-		const owner = `tRPC procedure "${path}"`;
+		const described = allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT;
+		const write = kind === "write";
+		const written = meta.description ?? definition.description;
 		declared.push({
 			name: path,
 			area: firstSegment(path),
 			kind,
-			description: definition.description,
-			input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,
+			description: written ?? derivedLine(write ? "run" : "read", path, "schema" in described ? fieldNames(described.schema) : []),
+			written: written !== void 0,
+			destructive: meta.destructive ?? write,
+			idempotent: meta.idempotent ?? !write,
+			input: described,
 			output: definition.output === void 0 ? void 0 : describeSchema(definition.output, owner),
 			run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal)
 		});
@@ -881,7 +1147,7 @@ function procedureDefinitions(router) {
 			inputs: def.inputs,
 			output: hasKey(def, "output") ? def.output : void 0,
 			description: typeof description === "string" && description.trim() ? description.trim() : void 0,
-			withheld: hasKey(meta, "koppeling") && meta.koppeling === false
+			koppeling: hasKey(meta, "koppeling") ? meta.koppeling : void 0
 		}];
 	});
 }
@@ -900,6 +1166,11 @@ function isRefusal(error) {
 * refused input answers every issue as data and the program never runs. A
 * parser that is no Standard Schema, or whose `validate` throws, is left to
 * tRPC's own parse, whose refusal then comes back as its sentence alone.
+*
+* This runs before the procedure's own chain, its authorization included, on
+* purpose: every caller already holds a token for this door, and `describe`
+* shows that same input schema to every such caller, so the issues reveal
+* nothing the schema does not.
 */
 async function inputIssues(parsers, input) {
 	const issues = [];
@@ -990,151 +1261,6 @@ function bearerVerifier(identity, audience) {
 			})
 		}).pipe(Effect.map(({ payload }) => payload));
 	};
-}
-/**
-* Words that say nothing about which operation is meant, in the two languages
-* a person here asks in. Without them "welke bestellingen moeten nog" would
-* rank on "moeten" as much as on "bestellingen".
-*/
-const STOPWORDS = new Set("de het een en of van voor op in naar met aan bij uit om over tot als dat die dit deze wat welk welke wie waar hoe hoeveel hebben heeft hebt is zijn was moet moeten mag kan kunnen worden wordt nog al er we wij ik je jij u ons onze mijn alle alles niet geen ook maar dan ander andere staan staat ligt liggen gaat gaan komt komen wil willen graag even nu the a an and or of for on in to with at by from as that this these those what which who where how many much is are was be been has have do does can should must all any not no".split(" "));
-/** How much a word found in each field counts; the name and the description say the most. */
-const WEIGHTS = {
-	name: 3,
-	description: 2,
-	area: 2,
-	input: 1
-};
-const FIELDS = [
-	"name",
-	"description",
-	"area",
-	"input"
-];
-/**
-* What each word counts once more when the words name an area or a leaf of two
-* or more words whole: a phrase that names a thing outweighs the same words
-* met one by one across other names. A one-word name gets nothing extra, since
-* its one word already counted.
-*/
-const WHOLE_WEIGHT = WEIGHTS.name;
-/** The shortest stem a prefix match may take, so "in" does not match "inventory". */
-const MIN_PREFIX = 4;
-/** The shortest shared start that makes two words cousins. */
-const COGNATE_PREFIX = 5;
-/**
-* The words of a text: split on anything but letters and digits and at
-* camelCase humps, lower-cased, stopwords dropped, each reduced to a stem.
-*/
-function stems(text) {
-	return text.replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2").replaceAll(/([A-Z]+)([A-Z][a-z])/g, "$1 $2").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word && !STOPWORDS.has(word)).map(stem);
-}
-/**
-* A light stem for Dutch and English: the past participle's "ge-" and the
-* plural, tense and inflection endings go, so "gepickt" meets "picked",
-* "getelde" meets "tel", "bestellingen" meets "bestelling" and "leveranciers"
-* meets "leverancier".
-*/
-function stem(word) {
-	let base = word.length >= 6 && word.startsWith("ge") ? word.slice(2) : word;
-	for (const ending of [
-		"ingen",
-		"en",
-		"es",
-		"ed",
-		"de",
-		"te",
-		"s",
-		"t",
-		"d",
-		"e"
-	]) if (base.endsWith(ending) && base.length - ending.length >= 3) {
-		base = ending === "ingen" ? `${base.slice(0, -ending.length)}ing` : base.slice(0, -ending.length);
-		break;
-	}
-	return base;
-}
-/**
-* How well a query stem meets an operation's stem: the same; one a prefix of
-* the other; one inside the other (a Dutch compound such as "verzendlabel");
-* or the two sharing most of the shorter one's start, which is how a Dutch
-* word meets its English cousin ("locatie" and "location").
-*/
-function closeness(query, word) {
-	if (query === word) return 1;
-	const [short, long] = query.length <= word.length ? [query, word] : [word, query];
-	if (short.length < MIN_PREFIX) return 0;
-	if (long.startsWith(short)) return .6;
-	if (long.includes(short)) return .4;
-	let shared = 0;
-	while (shared < short.length && short[shared] === long[shared]) shared += 1;
-	return shared >= COGNATE_PREFIX && shared >= short.length * .7 ? .4 : 0;
-}
-/** The index of `operations`, each searched by its name without its area (`leaf`). */
-function searchIndex(operations) {
-	const entries = operations.map(({ operation, leaf }) => ({
-		operation,
-		words: {
-			name: stems(leaf),
-			area: stems(operation.area),
-			description: stems(operation.description ?? ""),
-			input: stems(fieldNames(operation.input).join(" "))
-		}
-	}));
-	const carrying = /* @__PURE__ */ new Map();
-	for (const { words } of entries) for (const word of new Set(FIELDS.flatMap((field) => words[field]))) carrying.set(word, (carrying.get(word) ?? 0) + 1);
-	return {
-		entries,
-		carrying
-	};
-}
-/** The property names of a schema, two levels deep, through allOf and anyOf. */
-function fieldNames(schema, depth = 0) {
-	if (depth > 2) return [];
-	const properties = schema["properties"];
-	const own = isJsonObject(properties) ? Object.entries(properties) : [];
-	const nested = own.flatMap(([, child]) => isJsonObject(child) ? fieldNames(child, depth + 1) : []);
-	const combined = [schema["allOf"], schema["anyOf"]].flatMap((list) => isJsonArray(list) ? list.flatMap((part) => isJsonObject(part) ? fieldNames(part, depth) : []) : []);
-	return [
-		...own.map(([name]) => name),
-		...nested,
-		...combined
-	];
-}
-/**
-* The asked words that name an operation's area or its leaf whole, each of
-* two or more words that were all asked: "product categories list" names the
-* area "product-categories" whole, while it only shares "categories" with
-* "admin.products.categories.get".
-*/
-function namedWhole(own, asked) {
-	const named = /* @__PURE__ */ new Set();
-	for (const words of [own.area, own.name]) if (words.length > 1 && words.every((word) => asked.has(word))) for (const word of words) named.add(word);
-	return named;
-}
-/**
-* The operations whose words best meet `words`, best first, at most
-* {@link FIND_LIMIT}, and none that meets none of them. A word counts in each
-* field it meets, by that field's weight and by how rare its match is among the
-* operations, so a word every operation carries ranks nothing; and once more
-* where it helps name an area or a leaf whole.
-*/
-function find(index, words) {
-	const query = [...new Set(stems(words))];
-	const rarity = (word) => Math.log(1 + index.entries.length / Math.max(index.carrying.get(word) ?? 0, 1));
-	const asked = new Set(query);
-	return index.entries.map(({ operation, words: own }) => {
-		let score = 0;
-		for (const word of query) for (const field of FIELDS) {
-			let best = 0;
-			for (const candidate of own[field]) best = Math.max(best, WEIGHTS[field] * closeness(word, candidate) * rarity(candidate));
-			score += best;
-		}
-		for (const word of namedWhole(own, asked)) score += WHOLE_WEIGHT * rarity(word);
-		return {
-			operation,
-			score
-		};
-	}).filter(({ score }) => score > 0).toSorted((left, right) => right.score - left.score || (left.operation.name < right.operation.name ? -1 : 1)).slice(0, 10).map(({ operation }) => operation);
 }
 //#endregion
 //#region src/directory.ts
@@ -1296,24 +1422,33 @@ const answer = (structured) => ({
 	text: JSON.stringify(structured),
 	structured
 });
-function summaryLine(operation) {
-	return operation.description?.split("\n", 1)[0] ?? null;
+/**
+* One operation as `list` and `find` show it: a write with its hints, since a
+* read changes nothing whichever way they read.
+*/
+function entry(operation) {
+	const { name, kind, destructive, idempotent, description } = operation;
+	return {
+		name,
+		kind,
+		...kind === "write" ? {
+			destructive,
+			idempotent
+		} : {},
+		summary: description.split("\n", 1)[0] ?? ""
+	};
 }
 function list(directory, area) {
-	if (area === void 0) return answer({ areas: Array.from(directory.areas.values(), (entry) => ({
-		name: entry.name,
-		summary: entry.summary,
-		operations: entry.operations.length
+	if (area === void 0) return answer({ areas: Array.from(directory.areas.values(), (each) => ({
+		name: each.name,
+		summary: each.summary,
+		operations: each.operations.length
 	})) });
-	const entry = directory.areas.get(area);
-	if (entry === void 0) return refusal(copy.unknownArea(area, [...directory.areas.keys()]));
+	const found = directory.areas.get(area);
+	if (found === void 0) return refusal(copy.unknownArea(area, [...directory.areas.keys()]));
 	return answer({
-		area: entry.name,
-		operations: entry.operations.map((operation) => ({
-			name: operation.name,
-			kind: operation.kind,
-			summary: summaryLine(operation)
-		}))
+		area: found.name,
+		operations: found.operations.map(entry)
 	});
 }
 /** A description's line that starts with `Gevolg:` states what the operation changes. */
@@ -1325,8 +1460,10 @@ function describe(directory, name) {
 		name: operation.name,
 		area: operation.area,
 		kind: operation.kind,
-		description: operation.description ?? null,
-		sideEffect: operation.description?.match(SIDE_EFFECT)?.[1] ?? null,
+		destructive: operation.destructive,
+		idempotent: operation.idempotent,
+		description: operation.description,
+		sideEffect: operation.description.match(SIDE_EFFECT)?.[1] ?? null,
 		input: operation.input,
 		output: operation.output ?? null
 	});
@@ -1339,10 +1476,8 @@ function findAnswer(directory, words) {
 		message: copy.nothingFound(words, [...directory.areas.keys()])
 	});
 	return answer({ operations: found.map((operation) => ({
-		name: operation.name,
-		area: operation.area,
-		kind: operation.kind,
-		summary: summaryLine(operation)
+		...entry(operation),
+		area: operation.area
 	})) });
 }
 function result(answered) {

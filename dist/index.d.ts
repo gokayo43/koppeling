@@ -34,7 +34,17 @@ interface Operation<Actor> {
   /** The part of the program it belongs to: by default its name's first segment. */
   readonly area: string;
   readonly kind: Kind;
-  readonly description: string | undefined;
+  /**
+   * The program's own words, or, where it wrote none, one line the door
+   * derived from the name's words and the input's fields.
+   */
+  readonly description: string;
+  /** Whether `description` is the program's own words rather than the door's line. */
+  readonly written: boolean;
+  /** Whether running it may destroy data: delete, or overwrite what cannot be had back. */
+  readonly destructive: boolean;
+  /** Whether running it again with the same input changes nothing more. */
+  readonly idempotent: boolean;
   /** Every object that names its keys is closed: a call carrying any other key is refused. */
   readonly input: JsonSchema;
   readonly output: JsonSchema | undefined;
@@ -44,6 +54,17 @@ interface Operation<Actor> {
    * was reached, so nothing changed.
    */
   readonly run: (actor: Actor, input: Json | undefined, signal: AbortSignal) => Promise<Outcome>;
+}
+/**
+ * What a program may say to the door about one operation, as a tRPC
+ * procedure's `meta.koppeling` or an Elysia route's `detail.koppeling`, each
+ * overriding what the door would derive; `false` there withholds the
+ * operation instead.
+ */
+interface KoppelingMeta {
+  readonly description?: string;
+  readonly destructive?: boolean;
+  readonly idempotent?: boolean;
 }
 /** One operation the boot report names, and why. */
 interface Note {
@@ -63,8 +84,11 @@ interface Catalogue<Actor> {
 //#region src/adapters/elysia.d.ts
 declare module "elysia" {
   interface DocumentDecoration {
-    /** `false` keeps this route from the koppeling: the door skips it and names it in its boot report. */
-    koppeling?: boolean;
+    /**
+     * What the route says to the koppeling, over what the door derives; `false`
+     * keeps the route from it, and the door names it in its boot report.
+     */
+    koppeling?: false | KoppelingMeta;
   }
 }
 interface ElysiaOptions<Actor> {
@@ -98,7 +122,9 @@ interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
 }
 /**
  * The catalogue of a tRPC v11 router: every query and mutation, named by its
- * path. Subscriptions and the procedures the program withholds from the door
+ * path. A mutation is destructive and not idempotent, a query neither
+ * destroys nor repeats anything, unless `meta.koppeling` says otherwise.
+ * Subscriptions and the procedures the program withholds from the door
  * (`meta.koppeling: false`) are skipped and named in the boot report.
  */
 export declare function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(router: Router, options: TrpcOptions<Router, Actor>): Catalogue<Actor>;
@@ -199,4 +225,4 @@ interface GlossaryOptions {
  */
 export declare function glossaryFrom(markdown: string, options: GlossaryOptions): string;
 //#endregion
-export type { ActorDecision, BootReport, Catalogue, ElysiaOptions, GlossaryOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingEvent, KoppelingOptions, Note, Operation, Outcome, TrpcOptions, WriteOutcome };
+export type { ActorDecision, BootReport, Catalogue, ElysiaOptions, GlossaryOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingEvent, KoppelingMeta, KoppelingOptions, Note, Operation, Outcome, TrpcOptions, WriteOutcome };

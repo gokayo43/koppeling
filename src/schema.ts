@@ -1,7 +1,7 @@
 import { JSONSchema, Schema } from "effect";
 import * as AST from "effect/SchemaAST";
 
-import { isJsonObject, toJson, type Json, type JsonSchema } from "./json";
+import { isJsonArray, isJsonObject, toJson, type Json, type JsonSchema } from "./json";
 
 /** The symbol every TypeBox schema carries its kind under. */
 export const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
@@ -96,4 +96,20 @@ export function allOf(parts: readonly Described[]): Described | undefined {
   const [only, ...more] = schemas;
   if (only === undefined) return undefined;
   return { schema: more.length ? { allOf: [only, ...more] } : only };
+}
+
+/**
+ * A schema's properties, its own and those of its `allOf`, `anyOf` and `oneOf`
+ * parts, each with its schema: the fields an object of it may carry.
+ */
+export function properties(schema: JsonSchema): [string, JsonSchema][] {
+  const own = schema["properties"];
+  const named: [string, JsonSchema][] = isJsonObject(own)
+    ? Object.entries(own).flatMap(([name, child]) => (isJsonObject(child) ? [[name, child]] : []))
+    : [];
+  const parts = ["allOf", "anyOf", "oneOf"].flatMap((key) => {
+    const list = schema[key];
+    return isJsonArray(list) ? list.filter(isJsonObject) : [];
+  });
+  return [...named, ...parts.flatMap(properties)];
 }

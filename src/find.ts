@@ -1,5 +1,6 @@
 import type { Operation } from "./catalogue";
-import { isJsonArray, isJsonObject, type JsonSchema } from "./json";
+import type { JsonSchema } from "./json";
+import { properties } from "./schema";
 
 /** The most operations one `find` answers. */
 export const FIND_LIMIT = 10;
@@ -46,17 +47,20 @@ const MIN_PREFIX = 4;
 /** The shortest shared start that makes two words cousins. */
 const COGNATE_PREFIX = 5;
 
-/**
- * The words of a text: split on anything but letters and digits and at
- * camelCase humps, lower-cased, stopwords dropped, each reduced to a stem.
- */
-export function stems(text: string): string[] {
+/** The words of a text: split on anything but letters and digits and at camelCase humps, lower-cased. */
+export function wordsOf(text: string): string[] {
   return text
     .replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replaceAll(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
-    .filter((word) => word && !STOPWORDS.has(word))
+    .filter(Boolean);
+}
+
+/** The words of a text that say something, stopwords dropped, each reduced to a stem. */
+export function stems(text: string): string[] {
+  return wordsOf(text)
+    .filter((word) => !STOPWORDS.has(word))
     .map(stem);
 }
 
@@ -115,7 +119,7 @@ export function searchIndex<Actor>(
     words: {
       name: stems(leaf),
       area: stems(operation.area),
-      description: stems(operation.description ?? ""),
+      description: operation.written ? stems(operation.description) : [],
       input: stems(fieldNames(operation.input).join(" ")),
     },
   }));
@@ -128,20 +132,14 @@ export function searchIndex<Actor>(
   return { entries, carrying };
 }
 
-/** The property names of a schema, two levels deep, through allOf and anyOf. */
+/** The property names of a schema, two levels deep, through its combinations. */
 function fieldNames(schema: JsonSchema, depth = 0): string[] {
   if (depth > 2) return [];
-  const properties = schema["properties"];
-  const own = isJsonObject(properties) ? Object.entries(properties) : [];
-  const nested = own.flatMap(([, child]) =>
-    isJsonObject(child) ? fieldNames(child, depth + 1) : [],
-  );
-  const combined = [schema["allOf"], schema["anyOf"]].flatMap((list) =>
-    isJsonArray(list)
-      ? list.flatMap((part) => (isJsonObject(part) ? fieldNames(part, depth) : []))
-      : [],
-  );
-  return [...own.map(([name]) => name), ...nested, ...combined];
+  const own = properties(schema);
+  return [
+    ...own.map(([name]) => name),
+    ...own.flatMap(([, child]) => fieldNames(child, depth + 1)),
+  ];
 }
 
 /**
