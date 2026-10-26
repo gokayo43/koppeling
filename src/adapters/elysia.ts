@@ -88,7 +88,7 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
     const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
     schemas.set("params", schemas.get("params") ?? pathParameters(segments));
     const method = route.method;
-    const own = ownStore(app, route.method, route.path);
+    const own = ownStore(app, route.method, route.path, owner);
     declared.push({
       name,
       area: options.area?.(named) ?? firstSegment(name),
@@ -249,12 +249,25 @@ interface Target {
 type Reached = number | object | undefined;
 
 /**
+ * Whether the app answers through its generated handler, Elysia's default, or
+ * through its dynamic one (`aot: false`), which keeps every route, static ones
+ * included, in `router.dynamic` instead.
+ */
+const compiled = (app: AnyElysia) => app.config.aot !== false;
+
+/**
  * The route Elysia itself sends `method` and `path` to, read from its own
- * router in the order its generated handler asks (`composeGeneralHandler` in
- * Elysia 1.4.30): a static route first, where HEAD falls back to GET or ALL;
- * then the parameterised routes, where HEAD tries GET before its own, then ALL.
+ * router in the order its handler asks (Elysia 1.4.30). The generated handler
+ * (`composeGeneralHandler`): a static route first, where HEAD falls back to
+ * GET or ALL; then the parameterised routes, where HEAD tries GET before its
+ * own, then ALL. The dynamic handler (`createDynamicHandler`): the method,
+ * then ALL.
  */
 function reached(app: AnyElysia, method: string, path: string): Reached {
+  if (!compiled(app)) {
+    const router = app.router.dynamic;
+    return (router.find(method, path) ?? router.find("ALL", path))?.store;
+  }
   const decoded = path.split("/").map((segment) => decodeURIComponent(segment));
   for (const [template, methods] of Object.entries(app.router.static)) {
     const segments = template.split("/");
@@ -280,17 +293,24 @@ function reached(app: AnyElysia, method: string, path: string): Reached {
 const PROBE = "koppeling-probe-3f9c";
 
 /**
- * The route's own store in Elysia's router, found by a path only it matches;
- * undefined for a route without parameters, which Elysia keeps as a static
- * route and which no value can send elsewhere.
+ * The route's own store in the router Elysia answers it through, found by a
+ * path only it matches; undefined for a route without parameters, which no
+ * value can send elsewhere. A parameterised route the door cannot find there
+ * fails the boot: without it, no call's path could be checked.
  */
-function ownStore(app: AnyElysia, method: string, path: string): Reached {
+function ownStore(app: AnyElysia, method: string, path: string, owner: string): Reached {
   if (!path.includes(":") && !path.includes("*")) return undefined;
   const probe = path
     .split("/")
     .map((segment) => (segment.startsWith(":") || segment === "*" ? PROBE : segment))
     .join("/");
-  return app.router.http.find(method, probe)?.store;
+  const store = (compiled(app) ? app.router.http : app.router.dynamic).find(method, probe)?.store;
+  if (store === undefined) {
+    throw new Error(
+      `${owner}: the door cannot find this route in Elysia's router (router.http, or router.dynamic when aot is false), so it cannot check where a call's path leads`,
+    );
+  }
+  return store;
 }
 
 async function request(
