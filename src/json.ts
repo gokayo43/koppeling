@@ -27,28 +27,38 @@ export function toJson(value: unknown): Json {
   return walk(value, undefined);
 }
 
-/** How deep {@link boundedJson} follows a value before it writes `null` instead. */
+/** How deep {@link boundedJson} follows a value, and how many values it writes in all. */
 const BOUND_DEPTH = 12;
+const BOUND_VALUES = 10_000;
+
+/** What {@link boundedJson} writes where it stops: past its depth or budget, or at a loop. */
+export const TRUNCATED = "[ingekort]";
 
 /**
  * {@link toJson} for a value the program did not mean as an answer (a
- * refusal's details): an `Error` becomes its message, a value met again
- * inside itself becomes `null`, and so does anything deeper than
- * {@link BOUND_DEPTH}, so a looping or endless object cannot exhaust the stack.
+ * refusal's details): an `Error` becomes its message, and a value met again
+ * inside itself, one deeper than {@link BOUND_DEPTH} and every value past the
+ * first {@link BOUND_VALUES} become {@link TRUNCATED}, so a looping object, or
+ * one that shares its parts across many parents, writes a bounded answer.
  */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever object a program attached; this is where it becomes JSON
 export function boundedJson(value: unknown): Json {
-  return walk(value, { depth: 0, around: new Set() });
+  return walk(value, { depth: 0, around: new Set(), budget: { left: BOUND_VALUES } });
 }
 
-/** Where a bounded walk is: how deep, and the objects it is inside. */
+/** Where a bounded walk is: how deep, the objects it is inside, and the values it may still write. */
 interface Bound {
   readonly depth: number;
   readonly around: ReadonlySet<object>;
+  readonly budget: { left: number };
 }
 
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- toJson's input, passed on
 function walk(value: unknown, bound: Bound | undefined): Json {
+  if (bound !== undefined) {
+    if (bound.budget.left <= 0) return TRUNCATED;
+    bound.budget.left -= 1;
+  }
   if (typeof value === "string" || typeof value === "boolean") return value;
   // JSON has no negative zero: JSON.stringify writes -0 as 0.
   if (typeof value === "number") return Number.isFinite(value) ? value + 0 : null;
@@ -56,8 +66,12 @@ function walk(value: unknown, bound: Bound | undefined): Json {
   if (typeof value !== "object" || value === null) return null;
   if (bound === undefined) return objectToJson(value, undefined);
   if (value instanceof Error) return value.message;
-  if (bound.depth >= BOUND_DEPTH || bound.around.has(value)) return null;
-  return objectToJson(value, { depth: bound.depth + 1, around: new Set(bound.around).add(value) });
+  if (bound.depth >= BOUND_DEPTH || bound.around.has(value)) return TRUNCATED;
+  return objectToJson(value, {
+    depth: bound.depth + 1,
+    around: new Set(bound.around).add(value),
+    budget: bound.budget,
+  });
 }
 
 // oxlint-disable-next-line anti-slop/no-object-parameters -- the object half of toJson's input, which is any JavaScript object

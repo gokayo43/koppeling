@@ -16,31 +16,41 @@ function isJsonArray(value) {
 function toJson(value) {
 	return walk(value, void 0);
 }
-/** How deep {@link boundedJson} follows a value before it writes `null` instead. */
+/** How deep {@link boundedJson} follows a value, and how many values it writes in all. */
 const BOUND_DEPTH = 12;
+const BOUND_VALUES = 1e4;
+/** What {@link boundedJson} writes where it stops: past its depth or budget, or at a loop. */
+const TRUNCATED = "[ingekort]";
 /**
 * {@link toJson} for a value the program did not mean as an answer (a
-* refusal's details): an `Error` becomes its message, a value met again
-* inside itself becomes `null`, and so does anything deeper than
-* {@link BOUND_DEPTH}, so a looping or endless object cannot exhaust the stack.
+* refusal's details): an `Error` becomes its message, and a value met again
+* inside itself, one deeper than {@link BOUND_DEPTH} and every value past the
+* first {@link BOUND_VALUES} become {@link TRUNCATED}, so a looping object, or
+* one that shares its parts across many parents, writes a bounded answer.
 */
 function boundedJson(value) {
 	return walk(value, {
 		depth: 0,
-		around: /* @__PURE__ */ new Set()
+		around: /* @__PURE__ */ new Set(),
+		budget: { left: BOUND_VALUES }
 	});
 }
 function walk(value, bound) {
+	if (bound !== void 0) {
+		if (bound.budget.left <= 0) return TRUNCATED;
+		bound.budget.left -= 1;
+	}
 	if (typeof value === "string" || typeof value === "boolean") return value;
 	if (typeof value === "number") return Number.isFinite(value) ? value + 0 : null;
 	if (typeof value === "bigint") return value.toString();
 	if (typeof value !== "object" || value === null) return null;
 	if (bound === void 0) return objectToJson(value, void 0);
 	if (value instanceof Error) return value.message;
-	if (bound.depth >= BOUND_DEPTH || bound.around.has(value)) return null;
+	if (bound.depth >= BOUND_DEPTH || bound.around.has(value)) return TRUNCATED;
 	return objectToJson(value, {
 		depth: bound.depth + 1,
-		around: new Set(bound.around).add(value)
+		around: new Set(bound.around).add(value),
+		budget: bound.budget
 	});
 }
 function objectToJson(value, bound) {
@@ -159,7 +169,8 @@ function isOpen(schema) {
 * Every place in `value` where an object carries a key the closed `schema`
 * does not name there, outermost first. Where a combination's parts disagree
 * the keys of all of them are allowed, so a refusal is never wrong; a `$ref`
-* the door cannot resolve allows any key.
+* the door cannot resolve, or a conditional (`if`, `then`, `else`,
+* `dependentSchemas`), allows any key in its object.
 */
 function strayKeys(schema, value) {
 	if (value === void 0) return [];
@@ -189,7 +200,7 @@ function visit(met, value, at, strays) {
 	}
 	if (!isJsonObject(value)) return;
 	const allowed = new Set(here.flatMap(({ schema }) => Object.keys(propertiesOf(schema))));
-	const isClosed = here.some(({ schema }) => schema["additionalProperties"] === false || schema["unevaluatedProperties"] === false) && !here.some(({ schema }) => isOpen(schema));
+	const isClosed = here.some(({ schema }) => schema["additionalProperties"] === false || schema["unevaluatedProperties"] === false) && !here.some(({ schema, scope }) => isOpen(schema) || isOpaque(schema, scope));
 	const unknown = Object.keys(value).filter((key) => !allowed.has(key));
 	if (isClosed && unknown.length) strays.push({
 		at,
@@ -246,6 +257,21 @@ function expand$1(met, seen = /* @__PURE__ */ new Set()) {
 		scope
 	}];
 	return [own, ...[...parts, ...referred].flatMap((next) => expand$1(next, visited))];
+}
+/** Keys a schema may add to its object that the door does not follow. */
+const CONDITIONALS = [
+	"if",
+	"then",
+	"else",
+	"dependentSchemas"
+];
+/**
+* Whether a schema may name keys the door cannot read: through a `$ref` it
+* cannot resolve, or a conditional. Its object is then left open, since a
+* refusal must never be wrong.
+*/
+function isOpaque(schema, scope) {
+	return "$ref" in schema && resolve(schema["$ref"], scope) === void 0 || CONDITIONALS.some((key) => key in schema);
 }
 const holdsDefinitions = (schema) => "$defs" in schema || "definitions" in schema;
 /**
@@ -701,7 +727,7 @@ const array$1 = (item) => make$26((self, that) => {
 *
 * @since 2.0.0
 */
-const globalStoreId = `effect/GlobalValue`;
+const globalStoreId = `koppeling/GlobalValue`;
 let globalStore;
 /**
 * Retrieves or computes a global value associated with the given `id`. If the value for this `id`
@@ -12457,7 +12483,7 @@ const RuntimeFiberTypeId = /*#__PURE__*/ Symbol.for("effect/Fiber");
 const join = (self) => zipLeft(flatten(self.await), self.inheritAll);
 ({ ...CommitPrototype }), { ...fiberProto };
 /** @internal */
-const currentFiberURI = "effect/FiberCurrent";
+const currentFiberURI = "koppeling/FiberCurrent";
 /** @internal */
 const LoggerTypeId = /*#__PURE__*/ Symbol.for("effect/Logger");
 const loggerVariance = {
@@ -17809,6 +17835,15 @@ const toASTAnnotations = (annotations) => {
 };
 const mergeSchemaAnnotations = (ast, annotations$2) => annotations(ast, toASTAnnotations(annotations$2));
 /**
+* The `typeSchema` function allows you to extract the `Type` portion of a
+* schema, creating a new schema that conforms to the properties defined in the
+* original schema without considering the initial encoding or transformation
+* processes.
+*
+* @since 3.10.0
+*/
+const typeSchema = (schema) => make(typeAST(schema.ast));
+/**
 * Tests if a value is a `Schema`.
 *
 * @category guards
@@ -17821,29 +17856,32 @@ const isSchema = (u) => hasProperty(u, TypeId) && isObject(u[TypeId]);
 /** The symbol every TypeBox schema carries its kind under. */
 const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
 /**
-* A program's own schema for one value, as JSON Schema: Effect Schema through
-* `JSONSchema.make`, TypeBox as it is (it is JSON Schema already), and anything
-* implementing Standard JSON Schema (zod 4, ArkType, Valibot) through its own
-* converter. A schema in any other language throws, naming `owner`, so a host
-* learns at boot which operation the door cannot read.
+* A program's own schema for one value, as JSON Schema, from `side`: Effect
+* Schema through `JSONSchema.make` (its encoded side for an input, its type
+* side for an output), TypeBox as it is (it is JSON Schema already), and
+* anything implementing Standard JSON Schema (zod 4, ArkType, Valibot) through
+* its own converter for that side. A schema in any other language throws,
+* naming `owner`, so a host learns at boot which operation the door cannot
+* read.
 */
-function describeSchema(schema, owner) {
+function describeSchema(schema, owner, side) {
 	let converted;
 	try {
-		converted = convert(schema);
+		converted = convert(schema, side);
 	} catch (cause) {
 		return { undescribable: String(cause instanceof Error ? cause.message : cause).split("\n", 2).join(" ") };
 	}
 	if (converted === void 0) throw new Error(`${owner}: its schema is not Effect Schema 3, TypeBox or a Standard JSON Schema (zod 4; Effect 4 through Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema))), so the koppeling cannot read it`);
 	if (!isJsonObject(converted)) return { undescribable: `it converts to ${JSON.stringify(converted)}` };
-	return { schema: converted };
+	const { $schema: _dialect, ...shown } = converted;
+	return { schema: shown };
 }
 /** The schema in JSON Schema, or `undefined` when it is in no language the door reads. */
-function convert(schema) {
-	if (isSchema(schema)) return toJson(make$1(definedPart(schema)));
+function convert(schema, side) {
+	if (isSchema(schema)) return toJson(make$1(side === "input" ? definedPart(schema) : typeSchema(schema)));
 	if (typeof schema !== "object" && typeof schema !== "function" || schema === null) return;
 	if (TYPEBOX_KIND in schema) return toJson(schema);
-	return standardJsonSchema(schema);
+	return standardJsonSchema(schema, side);
 }
 /**
 * An Effect input whose encoded side is `X | undefined` (`Schema.UndefinedOr`,
@@ -17860,15 +17898,15 @@ function definedPart(schema) {
 	return defined.length === ast.types.length ? schema : make(Union.make(defined));
 }
 /** The schema's input side through its own Standard JSON Schema converter, if it has one. */
-function standardJsonSchema(schema) {
+function standardJsonSchema(schema, side) {
 	if (!("~standard" in schema)) return void 0;
 	const props = schema["~standard"];
 	if (typeof props !== "object" || props === null || !("jsonSchema" in props)) return void 0;
 	const converter = props.jsonSchema;
-	if (typeof converter !== "object" || converter === null || !("input" in converter)) return;
-	const input = converter.input;
-	if (typeof input !== "function") return void 0;
-	const json = toJson(input.call(converter, { target: "draft-2020-12" }));
+	if (typeof converter !== "object" || converter === null) return void 0;
+	const write = side === "input" ? "input" in converter ? converter.input : void 0 : "output" in converter ? converter.output : void 0;
+	if (typeof write !== "function") return void 0;
+	const json = toJson(write.call(converter, { target: "draft-2020-12" }));
 	return "vendor" in props && props.vendor === "effect" ? withoutDroppedOpenness(json) : json;
 }
 /**
@@ -17930,10 +17968,9 @@ const FIELDS = [
 	"input"
 ];
 /**
-* What each word counts once more when the words name an area or a leaf of two
-* or more words whole: a phrase that names a thing outweighs the same words
-* met one by one across other names. A one-word name gets nothing extra, since
-* its one word already counted.
+* What each word counts once more when the words name an area or a leaf
+* whole: an exact name ranks above the same word met inside another name
+* ("stock" inside "restock"), however rare that other word is.
 */
 const WHOLE_WEIGHT = WEIGHTS.name;
 /** The shortest stem a prefix match may take, so "in" does not match "inventory". */
@@ -18014,14 +18051,14 @@ function fieldNames$1(schema, depth = 0) {
 	return [...own.map(([name]) => name), ...own.flatMap(([, child]) => fieldNames$1(child, depth + 1))];
 }
 /**
-* The asked words that name an operation's area or its leaf whole, each of
-* two or more words that were all asked: "product categories list" names the
-* area "product-categories" whole, while it only shares "categories" with
+* The asked words that name an operation's area or its leaf whole, every word
+* of it asked: "stock" names the area "stock", and "product categories list"
+* the area "product-categories", while it only shares "categories" with
 * "admin.products.categories.get".
 */
 function namedWhole(own, asked) {
 	const named = /* @__PURE__ */ new Set();
-	for (const words of [own.area, own.name]) if (words.length > 1 && words.every((word) => asked.has(word))) for (const word of words) named.add(word);
+	for (const words of [own.area, own.name]) if (words.length > 0 && words.every((word) => asked.has(word))) for (const word of words) named.add(word);
 	return named;
 }
 /**
@@ -18202,7 +18239,7 @@ function nameSegment(segment) {
 function partSchema(app, hooks, part, owner) {
 	const own = field(hooks, part);
 	const guards = field(hooks, "standaloneValidator");
-	return allOf([own, ...Array.isArray(guards) ? guards.map((guard) => field(guard, part)) : []].filter((schema) => schema !== void 0).map((schema) => resolved(app, schema, `${owner} (${part})`)));
+	return allOf([own, ...Array.isArray(guards) ? guards.map((guard) => field(guard, part)) : []].filter((schema) => schema !== void 0).map((schema) => resolved(app, schema, `${owner} (${part})`, "input")));
 }
 /** What a path's `:name` segments ask for when the route declares no params schema. */
 function pathParameters(segments) {
@@ -18268,9 +18305,9 @@ function requires(schema) {
 function responseSchema(app, hooks, owner) {
 	const response = field(hooks, "response");
 	if (response === void 0) return void 0;
-	if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`);
+	if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`, "output");
 	const [status] = Object.keys(response).filter((key) => /^2\d\d$/.test(key)).toSorted();
-	return status === void 0 ? void 0 : resolved(app, field(response, status), `${owner} (response ${status})`);
+	return status === void 0 ? void 0 : resolved(app, field(response, status), `${owner} (response ${status})`, "output");
 }
 /**
 * Whether a route's `response` maps status codes to schemas rather than being
@@ -18285,11 +18322,11 @@ function isStatusMap(response) {
 * Not through `app.models`: that getter compiles a validator for every model
 * on each read (CLAUDE.md, Gotchas, has the measurement).
 */
-function resolved(app, schema, owner) {
-	if (typeof schema !== "string") return describeSchema(schema, owner);
+function resolved(app, schema, owner, side) {
+	if (typeof schema !== "string") return describeSchema(schema, owner, side);
 	const model = field(field(field(app, "definitions"), "type"), schema);
 	if (model === void 0) throw new Error(`${owner}: names a model "${schema}" the app does not have`);
-	return describeSchema(model, owner);
+	return describeSchema(model, owner, side);
 }
 /** `detail.summary` as the operation's line and `detail.description` below it. */
 function description(hooks) {
@@ -18476,11 +18513,15 @@ function fromTrpcRouter(router, options) {
 	*/
 	const run = async (actor, path, parsers, input, signal) => {
 		const issues = await inputIssues(parsers, input);
-		const message = issues[0]?.["message"];
-		if (issues.length > 0) return {
-			refusal: typeof message === "string" ? message : "",
-			details: { issues }
-		};
+		const [first] = issues;
+		if (first !== void 0) {
+			const message = first["message"];
+			if (issues.some((issue) => typeof issue["message"] !== "string") || typeof message !== "string") throw new Error(`tRPC procedure "${path}": an input issue without a message, which Standard Schema requires of every issue`);
+			return {
+				refusal: message,
+				details: { issues }
+			};
+		}
 		let target = router.createCaller(await options.contextFor(actor), { signal });
 		for (const segment of path.split(".")) target = Object(target)[segment];
 		if (typeof target !== "function") throw new Error(`The tRPC caller has no procedure at "${path}"`);
@@ -18515,7 +18556,7 @@ function fromTrpcRouter(router, options) {
 			});
 			continue;
 		}
-		const described = allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT;
+		const described = allOf(definition.inputs.map((parser) => describeSchema(parser, owner, "input"))) ?? NO_INPUT;
 		const write = kind === "write";
 		const written = meta.description ?? definition.description;
 		declared.push({
@@ -18527,7 +18568,7 @@ function fromTrpcRouter(router, options) {
 			destructive: meta.destructive ?? write,
 			idempotent: meta.idempotent ?? !write,
 			input: described,
-			output: definition.output === void 0 ? void 0 : describeSchema(definition.output, owner),
+			output: definition.output === void 0 ? void 0 : describeSchema(definition.output, owner, "output"),
 			run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal)
 		});
 	}
@@ -18579,7 +18620,10 @@ function isRefusal(error) {
 * This runs before the procedure's own chain, its authorization included, on
 * purpose: every caller already holds a token for this door, and `describe`
 * shows that same input schema to every such caller, so the issues reveal
-* nothing the schema does not.
+* nothing the schema does not. That holds for a schema whose checks read only
+* the input; a check that reads data (an async `refine` that queries a
+* database) runs here before the program's authorization, and what its issue
+* says reaches a caller the program would have refused.
 */
 async function inputIssues(parsers, input) {
 	const issues = [];
@@ -18953,13 +18997,16 @@ function call(session, tool, name, input, vervolg) {
 	const operation = session.directory.byName.get(name);
 	if (operation === void 0) return succeed$1(unknownOperation(session.directory, name));
 	if (operation.kind !== tool) return succeed$1(refusal(copy$2.wrongTool(name, operation.kind)));
-	const strays = strayKeys(operation.input, input);
-	if (strays.length) return succeed$1(refusal(copy$2.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
-		at,
-		unknown,
-		allowed
-	}))));
 	const write = operation.kind === "write";
+	const strays = strayKeys(operation.input, input);
+	if (strays.length) {
+		const refused = refusal(copy$2.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
+			at,
+			unknown,
+			allowed
+		})));
+		return write ? session.report(writeEvent(name, session.claims, "failure")).pipe(as(refused)) : succeed$1(refused);
+	}
 	const failed = (cause, reached) => session.report({
 		kind: "failure",
 		operation: name,
@@ -19106,7 +19153,14 @@ function findAnswer(directory, words) {
 		area: operation.area
 	})) });
 }
+/**
+* The longest answer whose value also goes as `structuredContent`: a quarter
+* of a page. A client may pass the model both copies, so a 39 000-character
+* answer sent twice reached it as 78 000; above this, the text alone.
+*/
+const STRUCTURED_BELOW = PAGE_SIZE / 4;
 function result(answered) {
+	const structured = answered.text.length < STRUCTURED_BELOW ? answered.structured : void 0;
 	return {
 		content: [{
 			type: "text",
@@ -19115,7 +19169,7 @@ function result(answered) {
 			type: "text",
 			text: answered.note
 		}]],
-		...answered.structured === void 0 ? {} : { structuredContent: answered.structured },
+		...structured === void 0 ? {} : { structuredContent: structured },
 		...answered.isError ? { isError: true } : {}
 	};
 }

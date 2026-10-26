@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { check } from "@gokayo43/dev-config/property";
 import { jsonValue, property } from "fast-check";
 
-import { toJson } from "../src/json";
+import { boundedJson, toJson, TRUNCATED } from "../src/json";
 
 test("a JSON value becomes itself, as JSON.stringify would write it", () => {
   check(
@@ -41,4 +41,21 @@ test("what superjson and drizzle hand back is written as JSON rather than lost",
   expect(toJson(undefined)).toBeNull();
   // The property above found it: JSON.stringify writes -0 as 0.
   expect(Object.is(toJson(-0), 0)).toBe(true);
+});
+
+test("a refusal's details are cut at a total budget of values, so shared references cannot make them explode", () => {
+  // Shared references are walked once per parent: eight shared keys over ten
+  // levels is 8^10 values, which never finished before the budget.
+  interface Shared {
+    readonly [key: string]: Shared;
+  }
+  let level: Shared = {};
+  for (let depth = 0; depth < 10; depth += 1) {
+    const below = level;
+    level = Object.fromEntries(Array.from({ length: 8 }, (_, key) => [`k${key}`, below]));
+  }
+  const written = JSON.stringify(boundedJson(level));
+
+  expect(written).toContain(JSON.stringify(TRUNCATED));
+  expect(written.split("{").length - 1).toBeLessThanOrEqual(10_000);
 });

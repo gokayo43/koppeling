@@ -358,7 +358,7 @@ test("details that loop, nest errors or cannot be read are bounded, and the refu
 
   expect(await run("looping", undefined)).toEqual({
     refusal: "Lus",
-    details: { opties: ["a"], self: null },
+    details: { opties: ["a"], self: "[ingekort]" },
   });
   const nested = await run("nested", undefined);
   expect(nested).toMatchObject({ refusal: "Genest", details: { reden: "plank vol" } });
@@ -440,4 +440,69 @@ test("a procedure without a description gets one line from its name's words and 
     ["orders.ship", "Verzendt een gepickte order en print het label.", true],
     ["orders.shippingQueue", "Leest: orders shipping queue.", false],
   ]);
+});
+
+test("an output is described as what the procedure answers, its schema's output side, not what it takes", () => {
+  // The likeliest wrong describes an output by its input side, as an input is
+  // described: a string that a transform turns into a number then reads as a
+  // string.
+  const router = t.router({
+    piped: t.procedure
+      .output(z.object({ n: z.string().transform(Number).pipe(z.number()) }))
+      .query(() => ({ n: "1" })),
+    transformed: t.procedure
+      .output(z.object({ n: z.string().transform(Number) }))
+      .query(() => ({ n: "1" })),
+    effect: t.procedure
+      .output(Schema.standardSchemaV1(Schema.Struct({ n: Schema.NumberFromString })))
+      .query(() => ({ n: "1" })),
+  });
+  const derived = fromTrpcRouter(router, { contextFor: () => ({}) });
+  const outputOf = (name: string) =>
+    derived.operations.find((operation) => operation.name === name)?.output;
+
+  expect(outputOf("piped")).toMatchObject({ properties: { n: { type: "number" } } });
+  expect(outputOf("effect")).toMatchObject({ properties: { n: { type: "number" } } });
+  expect(outputOf("transformed")).not.toMatchObject({ properties: { n: { type: "string" } } });
+  expect(derived.undescribed).toContainEqual({
+    name: "transformed",
+    reason: "output: Transforms cannot be represented in JSON Schema",
+  });
+});
+
+test("an input issue without a message, which Standard Schema forbids, fails the call loudly instead of refusing with nothing", async () => {
+  // The likeliest wrong answers an empty sentence, which tells the agent nothing.
+  const silent = {
+    "~standard": {
+      version: 1,
+      vendor: "test",
+      validate: () => ({ issues: [{ path: ["sku"] }] }),
+      jsonSchema: { input: () => ({ type: "object" }), output: () => ({ type: "object" }) },
+    },
+  };
+  const router = t.router({ count: t.procedure.input(Object(silent)).mutation(() => 1) });
+  const [count] = fromTrpcRouter(router, { contextFor: () => ({}) }).operations;
+
+  const thrown = await count?.run(null, { sku: "S" }, unaborted).then(
+    () => "resolved",
+    // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever the run rejected with
+    (error: unknown) => String(error),
+  );
+  expect(thrown).toContain('tRPC procedure "count": an input issue without a message');
+});
+
+test("a shown schema names no dialect of its own, since closing writes 2020-12's unevaluatedProperties", () => {
+  // Effect 3 writes draft-07's $schema, where unevaluatedProperties means
+  // nothing; MCP reads a tool's schema as 2020-12 by default.
+  const router = t.router({
+    effect: t.procedure
+      .input(Schema.standardSchemaV1(Schema.Struct({ a: Schema.String })))
+      .input(Schema.standardSchemaV1(Schema.Struct({ b: Schema.String })))
+      .output(Schema.standardSchemaV1(Schema.Struct({ c: Schema.String })))
+      .query(() => ({ c: "c" })),
+    zod: t.procedure.input(z.object({ a: z.string() })).query(() => 1),
+  });
+  for (const operation of fromTrpcRouter(router, { contextFor: () => ({}) }).operations) {
+    expect(JSON.stringify([operation.input, operation.output])).not.toContain("$schema");
+  }
 });

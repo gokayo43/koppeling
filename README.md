@@ -114,8 +114,12 @@ Five tools, always these, in this order:
 | `list`     | `area?`                      | No area: every area with its line and operation count. An exact area: its operations with name, kind and line, a write with its `destructive` and `idempotent`.                                                   |
 | `find`     | `words`                      | Up to ten operations whose name, area, written description and input field names best meet the words (at most 200 characters, 20 distinct words), shown as `list` shows them. Runs nothing.                       |
 | `describe` | `name`, `part?`, `vervolg?`  | The whole operation: kind, `destructive`, `idempotent`, description, side-effect line, input schema, `paging`, output schema (or, past 10 000 characters, its length). `part: "output"`: the output schema whole. |
-| `read`     | `name`, `input?`, `vervolg?` | Runs a read operation once as the person; its value as text and as `structuredContent: { result }`, or in pages when it is long.                                                                                  |
+| `read`     | `name`, `input?`, `vervolg?` | Runs a read operation once as the person; its value as text, and also as `structuredContent: { result }` while it is under 10 000 characters, or in pages when it is long.                                        |
 | `write`    | `name`, `input?`             | Runs a write operation once as the person, the same way, and always whole.                                                                                                                                        |
+
+An answer of 10 000 characters or more, a quarter of a page, comes as text
+alone: a client may pass the model both the text and the structured content,
+so an answer sent as both reached it twice.
 
 `list`, `find`, `describe` and `read` are annotated read-only; `write` is
 destructive, and its description tells the agent that a write changes data,
@@ -135,9 +139,10 @@ refused as a name the door does not have.
 
 `find` counts a word in each field it meets, by the field's weight (name 3,
 description and area 2, input fields 1) and by how rare its match is; and once
-more, at the name's weight, where the words name an area or a leaf of two or
-more words whole, so "product categories list" finds `product-categories.get`
-first.
+more, at the name's weight, where the words name an area or a leaf whole, so
+an exact name ranks above a word met inside another name: "stock" finds
+`stock.*` before `orders.restock`, and "product categories list" finds
+`product-categories.get` first.
 
 ### Long answers
 
@@ -203,10 +208,11 @@ validation error: Invalid arguments for tool find: …"). That is accepted.
   loose object (`additionalProperties` as a schema) and an alternative that
   takes anything stay open. Effect 4's `additionalProperties: true` on a struct
   is read as closed, since its decoding drops the keys it does not name.
-- Schemas are converted from Effect Schema 3 (`JSONSchema.make`, the encoded
-  side; an input whose encoded side is `X | undefined` is described as `X` and
-  may be left out), TypeBox (as it is) and Standard JSON Schema (zod 4, and
-  Effect 4). An Effect 4 host hands tRPC
+- Schemas are converted from Effect Schema 3 (`JSONSchema.make`: an input's
+  encoded side, where an input whose encoded side is `X | undefined` is
+  described as `X` and may be left out, and an output's type side), TypeBox (as
+  it is) and Standard JSON Schema (zod 4, and Effect 4: its converter's input
+  side for an input, its output side for an output). An Effect 4 host hands tRPC
   `.input(Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema)))`:
   tRPC validates through the Standard Schema half and the door describes
   through the Standard JSON Schema half; `Schema.toStandardSchemaV1` alone

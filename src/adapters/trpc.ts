@@ -55,9 +55,18 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
     signal: AbortSignal,
   ): Promise<Outcome> => {
     const issues = await inputIssues(parsers, input);
-    const message = issues[0]?.["message"];
-    if (issues.length > 0) {
-      return { refusal: typeof message === "string" ? message : "", details: { issues } };
+    const [first] = issues;
+    if (first !== undefined) {
+      const message = first["message"];
+      if (
+        issues.some((issue) => typeof issue["message"] !== "string") ||
+        typeof message !== "string"
+      ) {
+        throw new Error(
+          `tRPC procedure "${path}": an input issue without a message, which Standard Schema requires of every issue`,
+        );
+      }
+      return { refusal: message, details: { issues } };
     }
     let target: unknown = router.createCaller(await options.contextFor(actor), { signal });
     for (const segment of path.split(".")) {
@@ -95,7 +104,7 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       continue;
     }
     const described =
-      allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT;
+      allOf(definition.inputs.map((parser) => describeSchema(parser, owner, "input"))) ?? NO_INPUT;
     const write = kind === "write";
     const written = meta.description ?? definition.description;
     declared.push({
@@ -114,7 +123,9 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       idempotent: meta.idempotent ?? !write,
       input: described,
       output:
-        definition.output === undefined ? undefined : describeSchema(definition.output, owner),
+        definition.output === undefined
+          ? undefined
+          : describeSchema(definition.output, owner, "output"),
       run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal),
     });
   }
@@ -204,7 +215,10 @@ function isRefusal(error: unknown): error is Error {
  * This runs before the procedure's own chain, its authorization included, on
  * purpose: every caller already holds a token for this door, and `describe`
  * shows that same input schema to every such caller, so the issues reveal
- * nothing the schema does not.
+ * nothing the schema does not. That holds for a schema whose checks read only
+ * the input; a check that reads data (an async `refine` that queries a
+ * database) runs here before the program's authorization, and what its issue
+ * says reaches a caller the program would have refused.
  */
 async function inputIssues(
   parsers: readonly unknown[],
