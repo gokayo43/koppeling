@@ -1,7 +1,0 @@
-{
-  "extends": "@gokayo43/dev-config/tsconfig.base.json",
-  "compilerOptions": {
-    "types": ["bun"]
-  },
-  "include": ["knip.ts", "scripts"]
-}

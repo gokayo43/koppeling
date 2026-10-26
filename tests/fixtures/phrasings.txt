@@ -1,0 +1,12 @@
+welke bestellingen moeten nog gepickt worden
+zet deze bestelling op gepickt
+hoeveel voorraad hebben we van sku 12345
+verplaats product naar ander schap
+nieuwe leverancier toevoegen
+wat is de prijs van dit product voor deze auto
+welke werkorders staan open voor vandaag
+maak een offerte voor klant X
+which cars fit this product
+tel de voorraad op locatie A3
+print een label voor deze bestelling
+wijzig het telefoonnummer van klant

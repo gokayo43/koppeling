@@ -1,18 +1,7 @@
 {
   "extends": "@gokayo43/dev-config/tsconfig.base.json",
   "compilerOptions": {
-    "jsx": "react-jsx",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["vite/client", "bun"],
-    "paths": { "~/*": ["./src/*"] }
+    "types": ["bun"]
   },
-  "include": [
-    "src",
-    "tests",
-    "scripts",
-    "vite.config.ts",
-    "drizzle.config.ts",
-    "knip.ts",
-    "setup.ts"
-  ]
+  "include": ["bin", "src", "tests", "knip.ts", "tsdown.config.ts"]
 }

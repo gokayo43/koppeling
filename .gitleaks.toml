@@ -2,11 +2,10 @@
 [extend]
 useDefault = true
 
-# The bind and app suites boot the real server with a deliberately fake
-# BETTER_AUTH_SECRET whose name says what it is. It lives in test source and
-# in history, so a line-level gitleaks:allow cannot cover the commits that
-# introduced it — this repo-level allowlist can, and it ships with the
-# scaffold, whose copies of those tests would otherwise fail their own
-# secret-scan on day one.
+# The repository began as a copy of gokayo43/project-template, whose first
+# commit carries test files with a deliberately fake BETTER_AUTH_SECRET whose
+# name says what it is. Those files are gone from the tree, but CI scans the
+# whole history, which keeps that commit, so a line-level gitleaks:allow cannot
+# reach it; this repo-level allowlist can.
 [allowlist]
 regexes = ['''probe-secret-that-is-long-enough''']

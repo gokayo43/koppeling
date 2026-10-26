@@ -1,12 +1,18 @@
 {
-  "name": "project-template",
-  "private": true,
+  "name": "koppeling",
+  "files": [
+    "dist"
+  ],
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "setup": "bun run setup.ts",
-    "dev": "bun scripts/worktree.ts --provision --ports env -u PORT bunx --bun vite dev",
-    "build": "vite build",
-    "start": "HOST=${HOST:-127.0.0.1} bun .output/server/index.mjs",
+    "build": "bun bin/build.ts",
+    "walk": "bun bin/walk.ts",
     "lint": "oxlint --report-unused-disable-directives-severity=error",
     "lint:fix": "oxlint --fix",
     "format": "oxfmt",
@@ -15,18 +21,51 @@
     "test": "bun test",
     "knip": "knip",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun run knip",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "bun scripts/worktree.ts --provision bun run src/server/migrate.ts",
-    "prepare": "lefthook install || true",
-    "worktree:clean": "bun scripts/worktree-clean.ts",
-    "preview": "scripts/preview.sh",
-    "preview:capacity": "scripts/preview-capacity.sh",
-    "preview:down": "scripts/preview-down.sh"
+    "hooks": "lefthook install"
   },
-  "packageManager": "bun@1.3.11",
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "jose": "6.2.12"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
+    "@gokayo43/dev-config": "github:gokayo43/dev-config#bf443953e3c8dcd80ed5f12872f942e1d6d3d046",
+    "@modelcontextprotocol/client": "2.3.1",
+    "@sinclair/typebox": "0.34.52",
+    "@trpc/server": "11.19.0",
+    "@types/bun": "1.4.3",
+    "effect": "3.22.3",
+    "effect4": "npm:effect@4.0.5",
+    "elysia": "1.4.30",
+    "eslint-import-resolver-typescript": "4.4.5",
+    "eslint-plugin-boundaries": "7.2.0",
+    "fast-check": "4.10.2",
+    "knip": "6.41.0",
+    "lefthook": "2.2.2",
+    "oxfmt": "0.73.0",
+    "oxlint": "1.88.0",
+    "oxlint-tsgolint": "7.0.2004",
+    "tsdown": "0.23.1",
+    "typescript": "7.0.2",
+    "zod": "4.6.7"
+  },
+  "peerDependencies": {
+    "@trpc/server": "^11",
+    "effect": "^3.22.1",
+    "elysia": "^1.4"
+  },
+  "peerDependenciesMeta": {
+    "@trpc/server": {
+      "optional": true
+    },
+    "elysia": {
+      "optional": true
+    }
+  },
+  "packageManager": "bun@1.4.0",
   "lifecycle": "dev",
   "trustedDependencies": [
-    "lefthook",
-    "esbuild"
+    "lefthook"
   ]
 }
