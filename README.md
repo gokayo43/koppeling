@@ -135,9 +135,10 @@ refused as a name the door does not have.
 
 `find` counts a word in each field it meets, by the field's weight (name 3,
 description and area 2, input fields 1) and by how rare its match is; and once
-more, at the name's weight, where the words name an area or a leaf of two or
-more words whole, so "product categories list" finds `product-categories.get`
-first.
+more, at the name's weight, where the words name an area or a leaf whole, so
+an exact name ranks above a word met inside another name: "stock" finds
+`stock.*` before `orders.restock`, and "product categories list" finds
+`product-categories.get` first.
 
 ### Long answers
 

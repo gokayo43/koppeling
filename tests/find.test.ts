@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 
 import { toDirectory } from "../src/directory";
 import { find, FIND_LIMIT, stems } from "../src/find";
-import { warehouseDirectory } from "./fixtures/doors";
 import { sketched } from "./support/operations";
 
 const names = (operations: readonly { readonly name: string }[]) =>
@@ -92,11 +91,20 @@ test("an area or a leaf named whole by the words outranks words matched across o
   ).toEqual(["product-categories.get", "product-categories.id.get"]);
 });
 
-test("a one-word area named by the words counts once, as any word does", () => {
-  // "bestellingen" is the warehouse's area of purchase orders; the person asks
-  // about orders to pick. Counting a one-word area again for being named whole
-  // ranks the purchase orders first.
-  expect(
-    names(find(warehouseDirectory().search, "welke bestellingen moeten nog gepickt worden"))[0],
-  ).toBe("orders.updatePicking");
+test("an exact match on a one-word area ranks above a word met inside another name", () => {
+  // "restock" carries "stock" inside it, and it is rarer than the area's
+  // name, so ranking by rarity alone put orders.restock above stock.*.
+  const { operations } = sketched([
+    { name: "stock.get" },
+    { name: "stock.levels" },
+    { name: "stock.move", kind: "write" },
+    { name: "orders.restock", kind: "write" },
+    { name: "orders.get" },
+    { name: "labels.get" },
+  ]);
+  const found = names(
+    find(toDirectory({ operations, skipped: [], undescribed: [] }).search, "stock"),
+  );
+
+  expect(found.slice(0, 3).toSorted()).toEqual(["stock.get", "stock.levels", "stock.move"]);
 });
