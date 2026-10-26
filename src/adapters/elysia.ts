@@ -20,7 +20,7 @@ import {
   type JsonObject,
   type JsonSchema,
 } from "../json";
-import { allOf, describeSchema, TYPEBOX_KIND, type Described } from "../schema";
+import { allOf, describeSchema, TYPEBOX_KIND, type Described, type Side } from "../schema";
 
 declare module "elysia" {
   interface DocumentDecoration {
@@ -184,7 +184,7 @@ function partSchema(
   return allOf(
     [own, ...(Array.isArray(guards) ? guards.map((guard) => field(guard, part)) : [])]
       .filter((schema) => schema !== undefined)
-      .map((schema) => resolved(app, schema, `${owner} (${part})`)),
+      .map((schema) => resolved(app, schema, `${owner} (${part})`, "input")),
   );
 }
 
@@ -266,13 +266,13 @@ function responseSchema(
 ): Described | undefined {
   const response = field(hooks, "response");
   if (response === undefined) return undefined;
-  if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`);
+  if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`, "output");
   const [status] = Object.keys(response)
     .filter((key) => /^2\d\d$/.test(key))
     .toSorted();
   return status === undefined
     ? undefined
-    : resolved(app, field(response, status), `${owner} (response ${status})`);
+    : resolved(app, field(response, status), `${owner} (response ${status})`, "output");
 }
 
 /**
@@ -296,12 +296,12 @@ function isStatusMap(response: unknown): response is object {
  * on each read (CLAUDE.md, Gotchas, has the measurement).
  */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a route's schema, in whichever language the app wrote it
-function resolved(app: AnyElysia, schema: unknown, owner: string): Described {
-  if (typeof schema !== "string") return describeSchema(schema, owner);
+function resolved(app: AnyElysia, schema: unknown, owner: string, side: Side): Described {
+  if (typeof schema !== "string") return describeSchema(schema, owner, side);
   const model = field(field(field(app, "definitions"), "type"), schema);
   if (model === undefined)
     throw new Error(`${owner}: names a model "${schema}" the app does not have`);
-  return describeSchema(model, owner);
+  return describeSchema(model, owner, side);
 }
 
 /** `detail.summary` as the operation's line and `detail.description` below it. */

@@ -441,3 +441,31 @@ test("a procedure without a description gets one line from its name's words and 
     ["orders.shippingQueue", "Leest: orders shipping queue.", false],
   ]);
 });
+
+test("an output is described as what the procedure answers, its schema's output side, not what it takes", () => {
+  // The likeliest wrong describes an output by its input side, as an input is
+  // described: a string that a transform turns into a number then reads as a
+  // string.
+  const router = t.router({
+    piped: t.procedure
+      .output(z.object({ n: z.string().transform(Number).pipe(z.number()) }))
+      .query(() => ({ n: "1" })),
+    transformed: t.procedure
+      .output(z.object({ n: z.string().transform(Number) }))
+      .query(() => ({ n: "1" })),
+    effect: t.procedure
+      .output(Schema.standardSchemaV1(Schema.Struct({ n: Schema.NumberFromString })))
+      .query(() => ({ n: "1" })),
+  });
+  const derived = fromTrpcRouter(router, { contextFor: () => ({}) });
+  const outputOf = (name: string) =>
+    derived.operations.find((operation) => operation.name === name)?.output;
+
+  expect(outputOf("piped")).toMatchObject({ properties: { n: { type: "number" } } });
+  expect(outputOf("effect")).toMatchObject({ properties: { n: { type: "number" } } });
+  expect(outputOf("transformed")).not.toMatchObject({ properties: { n: { type: "string" } } });
+  expect(derived.undescribed).toContainEqual({
+    name: "transformed",
+    reason: "output: Transforms cannot be represented in JSON Schema",
+  });
+});

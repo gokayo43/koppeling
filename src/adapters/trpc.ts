@@ -95,7 +95,7 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       continue;
     }
     const described =
-      allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT;
+      allOf(definition.inputs.map((parser) => describeSchema(parser, owner, "input"))) ?? NO_INPUT;
     const write = kind === "write";
     const written = meta.description ?? definition.description;
     declared.push({
@@ -114,7 +114,9 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       idempotent: meta.idempotent ?? !write,
       input: described,
       output:
-        definition.output === undefined ? undefined : describeSchema(definition.output, owner),
+        definition.output === undefined
+          ? undefined
+          : describeSchema(definition.output, owner, "output"),
       run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal),
     });
   }

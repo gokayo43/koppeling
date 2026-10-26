@@ -204,10 +204,11 @@ validation error: Invalid arguments for tool find: …"). That is accepted.
   loose object (`additionalProperties` as a schema) and an alternative that
   takes anything stay open. Effect 4's `additionalProperties: true` on a struct
   is read as closed, since its decoding drops the keys it does not name.
-- Schemas are converted from Effect Schema 3 (`JSONSchema.make`, the encoded
-  side; an input whose encoded side is `X | undefined` is described as `X` and
-  may be left out), TypeBox (as it is) and Standard JSON Schema (zod 4, and
-  Effect 4). An Effect 4 host hands tRPC
+- Schemas are converted from Effect Schema 3 (`JSONSchema.make`: an input's
+  encoded side, where an input whose encoded side is `X | undefined` is
+  described as `X` and may be left out, and an output's type side), TypeBox (as
+  it is) and Standard JSON Schema (zod 4, and Effect 4: its converter's input
+  side for an input, its output side for an output). An Effect 4 host hands tRPC
   `.input(Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(schema)))`:
   tRPC validates through the Standard Schema half and the door describes
   through the Standard JSON Schema half; `Schema.toStandardSchemaV1` alone

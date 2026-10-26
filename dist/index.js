@@ -17835,6 +17835,15 @@ const toASTAnnotations = (annotations) => {
 };
 const mergeSchemaAnnotations = (ast, annotations$2) => annotations(ast, toASTAnnotations(annotations$2));
 /**
+* The `typeSchema` function allows you to extract the `Type` portion of a
+* schema, creating a new schema that conforms to the properties defined in the
+* original schema without considering the initial encoding or transformation
+* processes.
+*
+* @since 3.10.0
+*/
+const typeSchema = (schema) => make(typeAST(schema.ast));
+/**
 * Tests if a value is a `Schema`.
 *
 * @category guards
@@ -17847,16 +17856,18 @@ const isSchema = (u) => hasProperty(u, TypeId) && isObject(u[TypeId]);
 /** The symbol every TypeBox schema carries its kind under. */
 const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
 /**
-* A program's own schema for one value, as JSON Schema: Effect Schema through
-* `JSONSchema.make`, TypeBox as it is (it is JSON Schema already), and anything
-* implementing Standard JSON Schema (zod 4, ArkType, Valibot) through its own
-* converter. A schema in any other language throws, naming `owner`, so a host
-* learns at boot which operation the door cannot read.
+* A program's own schema for one value, as JSON Schema, from `side`: Effect
+* Schema through `JSONSchema.make` (its encoded side for an input, its type
+* side for an output), TypeBox as it is (it is JSON Schema already), and
+* anything implementing Standard JSON Schema (zod 4, ArkType, Valibot) through
+* its own converter for that side. A schema in any other language throws,
+* naming `owner`, so a host learns at boot which operation the door cannot
+* read.
 */
-function describeSchema(schema, owner) {
+function describeSchema(schema, owner, side) {
 	let converted;
 	try {
-		converted = convert(schema);
+		converted = convert(schema, side);
 	} catch (cause) {
 		return { undescribable: String(cause instanceof Error ? cause.message : cause).split("\n", 2).join(" ") };
 	}
@@ -17865,11 +17876,11 @@ function describeSchema(schema, owner) {
 	return { schema: converted };
 }
 /** The schema in JSON Schema, or `undefined` when it is in no language the door reads. */
-function convert(schema) {
-	if (isSchema(schema)) return toJson(make$1(definedPart(schema)));
+function convert(schema, side) {
+	if (isSchema(schema)) return toJson(make$1(side === "input" ? definedPart(schema) : typeSchema(schema)));
 	if (typeof schema !== "object" && typeof schema !== "function" || schema === null) return;
 	if (TYPEBOX_KIND in schema) return toJson(schema);
-	return standardJsonSchema(schema);
+	return standardJsonSchema(schema, side);
 }
 /**
 * An Effect input whose encoded side is `X | undefined` (`Schema.UndefinedOr`,
@@ -17886,15 +17897,15 @@ function definedPart(schema) {
 	return defined.length === ast.types.length ? schema : make(Union.make(defined));
 }
 /** The schema's input side through its own Standard JSON Schema converter, if it has one. */
-function standardJsonSchema(schema) {
+function standardJsonSchema(schema, side) {
 	if (!("~standard" in schema)) return void 0;
 	const props = schema["~standard"];
 	if (typeof props !== "object" || props === null || !("jsonSchema" in props)) return void 0;
 	const converter = props.jsonSchema;
-	if (typeof converter !== "object" || converter === null || !("input" in converter)) return;
-	const input = converter.input;
-	if (typeof input !== "function") return void 0;
-	const json = toJson(input.call(converter, { target: "draft-2020-12" }));
+	if (typeof converter !== "object" || converter === null) return void 0;
+	const write = side === "input" ? "input" in converter ? converter.input : void 0 : "output" in converter ? converter.output : void 0;
+	if (typeof write !== "function") return void 0;
+	const json = toJson(write.call(converter, { target: "draft-2020-12" }));
 	return "vendor" in props && props.vendor === "effect" ? withoutDroppedOpenness(json) : json;
 }
 /**
@@ -18227,7 +18238,7 @@ function nameSegment(segment) {
 function partSchema(app, hooks, part, owner) {
 	const own = field(hooks, part);
 	const guards = field(hooks, "standaloneValidator");
-	return allOf([own, ...Array.isArray(guards) ? guards.map((guard) => field(guard, part)) : []].filter((schema) => schema !== void 0).map((schema) => resolved(app, schema, `${owner} (${part})`)));
+	return allOf([own, ...Array.isArray(guards) ? guards.map((guard) => field(guard, part)) : []].filter((schema) => schema !== void 0).map((schema) => resolved(app, schema, `${owner} (${part})`, "input")));
 }
 /** What a path's `:name` segments ask for when the route declares no params schema. */
 function pathParameters(segments) {
@@ -18293,9 +18304,9 @@ function requires(schema) {
 function responseSchema(app, hooks, owner) {
 	const response = field(hooks, "response");
 	if (response === void 0) return void 0;
-	if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`);
+	if (!isStatusMap(response)) return resolved(app, response, `${owner} (response)`, "output");
 	const [status] = Object.keys(response).filter((key) => /^2\d\d$/.test(key)).toSorted();
-	return status === void 0 ? void 0 : resolved(app, field(response, status), `${owner} (response ${status})`);
+	return status === void 0 ? void 0 : resolved(app, field(response, status), `${owner} (response ${status})`, "output");
 }
 /**
 * Whether a route's `response` maps status codes to schemas rather than being
@@ -18310,11 +18321,11 @@ function isStatusMap(response) {
 * Not through `app.models`: that getter compiles a validator for every model
 * on each read (CLAUDE.md, Gotchas, has the measurement).
 */
-function resolved(app, schema, owner) {
-	if (typeof schema !== "string") return describeSchema(schema, owner);
+function resolved(app, schema, owner, side) {
+	if (typeof schema !== "string") return describeSchema(schema, owner, side);
 	const model = field(field(field(app, "definitions"), "type"), schema);
 	if (model === void 0) throw new Error(`${owner}: names a model "${schema}" the app does not have`);
-	return describeSchema(model, owner);
+	return describeSchema(model, owner, side);
 }
 /** `detail.summary` as the operation's line and `detail.description` below it. */
 function description(hooks) {
@@ -18540,7 +18551,7 @@ function fromTrpcRouter(router, options) {
 			});
 			continue;
 		}
-		const described = allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT;
+		const described = allOf(definition.inputs.map((parser) => describeSchema(parser, owner, "input"))) ?? NO_INPUT;
 		const write = kind === "write";
 		const written = meta.description ?? definition.description;
 		declared.push({
@@ -18552,7 +18563,7 @@ function fromTrpcRouter(router, options) {
 			destructive: meta.destructive ?? write,
 			idempotent: meta.idempotent ?? !write,
 			input: described,
-			output: definition.output === void 0 ? void 0 : describeSchema(definition.output, owner),
+			output: definition.output === void 0 ? void 0 : describeSchema(definition.output, owner, "output"),
 			run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal)
 		});
 	}

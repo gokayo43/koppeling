@@ -20,7 +20,7 @@ import { describeSchema } from "../src/schema";
 
 /** What a program's zod input becomes as the door reads it. */
 function shown(schema: z.ZodType): JsonSchema {
-  const described = describeSchema(schema, "test");
+  const described = describeSchema(schema, "test", "input");
   if (!("schema" in described)) throw new Error(described.undescribable);
   return closed(described.schema);
 }
