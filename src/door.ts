@@ -8,15 +8,64 @@ import {
 import { Data, Effect } from "effect";
 import type { JWTPayload } from "jose";
 
-import { bearerVerifier, type Identity } from "./auth";
-import type { Catalogue, Note } from "./catalogue";
+import { bearerVerifier } from "./auth";
+import type { Catalogue, Note, Operation } from "./catalogue";
 import { copy } from "./copy";
-import { instructionsFor, toDirectory } from "./directory";
-import { reporter, type KoppelingEvent } from "./events";
+import { admitted, instructionsFor, toDirectory } from "./directory";
+import { reporter } from "./events";
+import { Pages } from "./pages";
 import { mcpServer, refusalServer } from "./tools";
 
-/** Who a token's person is to the program, or the program's sentence for why they may not come in. */
-export type ActorDecision<Actor> = { readonly actor: Actor } | { readonly refusal: string };
+/** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
+export interface Identity {
+  /** The `iss` every token must carry: the provider's public origin. */
+  readonly issuer: string;
+  /**
+   * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
+   * when absent. Separate from `issuer` so a host beside the provider can fetch
+   * them over its own network while tokens still name the public origin.
+   */
+  readonly jwksUrl?: string;
+  /** The authorization server the metadata document sends a client to for its sign-in. */
+  readonly authorizationServer: string;
+}
+
+/**
+ * What a write came to: the program's value, its refusal, a failure before the
+ * program was reached (nothing changed), or `unknown`: the program was reached
+ * and its answer was lost or late, so the change may have been made.
+ */
+export type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
+
+/**
+ * What the door tells the host's logger. `write`: one per call of a write
+ * operation, naming the person and the program acting for them. `failure`: a
+ * failure the person was answered with the door's own sentence for; its
+ * `operation` is null when the sign-in failed (the key set, `actorFor` or `allows`).
+ */
+export type KoppelingEvent =
+  | {
+      readonly kind: "write";
+      readonly operation: string;
+      readonly sub: string | null;
+      readonly name: string | null;
+      readonly via: string | null;
+      readonly outcome: WriteOutcome;
+    }
+  | { readonly kind: "failure"; readonly operation: string | null; readonly cause: unknown };
+
+/**
+ * Who a token's person is to the program, with the operations they may use
+ * (every one when `allows` is absent), or the program's sentence for why they
+ * may not come in.
+ */
+export type ActorDecision<Actor> =
+  | {
+      readonly actor: Actor;
+      /** Whether the person may use `operation`: the door lists, finds, describes and runs only those. */
+      readonly allows?: (operation: Operation<Actor>) => boolean;
+    }
+  | { readonly refusal: string };
 
 export interface KoppelingOptions<Actor> {
   readonly catalogue: Catalogue<Actor>;
@@ -50,7 +99,10 @@ export interface Koppeling {
 
 class Refused extends Data.TaggedError("Refused")<{ readonly sentence: string }> {}
 
-/** The host's `actorFor` failed: the token verified, but its person could not be looked up. */
+/**
+ * The host's `actorFor`, or its `allows`, failed: the token verified, but its
+ * person could not be looked up.
+ */
 class PersonUnreachable extends Data.TaggedError("PersonUnreachable")<{
   readonly cause: unknown;
 }> {}
@@ -118,11 +170,19 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
   const metadataUrl = getOAuthProtectedResourceMetadataUrl(new URL(options.resource.url));
   const verify = bearerVerifier(options.identity, options.resource.url);
   const report = reporter(options.log);
+  const pages = new Pages();
   const document = {
     resource: options.resource.url,
     authorization_servers: [options.identity.authorizationServer],
     scopes_supported: options.resource.scopes,
     bearer_methods_supported: ["header"],
+  };
+
+  /** The part of the door a person may use, and its outline; the whole door without `allows`. */
+  const personal = (allows: ((operation: Operation<Actor>) => boolean) | undefined) => {
+    if (allows === undefined) return { directory: operations, instructions };
+    const directory = admitted(operations, allows);
+    return { directory, instructions: instructionsFor(options.glossary, directory) };
   };
 
   /**
@@ -139,14 +199,27 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
                 try: async () => options.actorFor(claims),
                 catch: (cause) => new PersonUnreachable({ cause }),
               }).pipe(
-                Effect.flatMap((decision) =>
+                Effect.flatMap((decision): Effect.Effect<Response, Refused | PersonUnreachable> =>
                   "refusal" in decision
                     ? Effect.fail(new Refused({ sentence: decision.refusal }))
-                    : Effect.promise(() =>
-                        serve(request, () =>
-                          mcpServer(
-                            { directory: operations, actor: decision.actor, claims, report },
-                            instructions,
+                    : Effect.try({
+                        try: () => personal(decision.allows),
+                        catch: (cause) => new PersonUnreachable({ cause }),
+                      }).pipe(
+                        Effect.flatMap((part) =>
+                          Effect.promise(() =>
+                            serve(request, () =>
+                              mcpServer(
+                                {
+                                  directory: part.directory,
+                                  actor: decision.actor,
+                                  claims,
+                                  report,
+                                  pages,
+                                },
+                                part.instructions,
+                              ),
+                            ),
                           ),
                         ),
                       ),

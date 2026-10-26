@@ -3,6 +3,8 @@ import { catalogue, firstSegment, type Catalogue, type Kind } from "../../src/ca
 
 export interface Sketch {
   readonly name: string;
+  /** Its name's first segment when absent. */
+  readonly area?: string;
   readonly kind?: Kind;
   readonly description?: string;
   readonly fields?: readonly string[];
@@ -13,9 +15,12 @@ export function sketched(sketches: readonly Sketch[], ran: string[] = []): Catal
   return catalogue(
     sketches.map((sketch) => ({
       name: sketch.name,
-      area: firstSegment(sketch.name),
+      area: sketch.area ?? firstSegment(sketch.name),
       kind: sketch.kind ?? "read",
-      description: sketch.description,
+      description: sketch.description ?? sketch.name,
+      written: sketch.description !== undefined,
+      destructive: sketch.kind === "write",
+      idempotent: sketch.kind !== "write",
       input: {
         schema: {
           type: "object",

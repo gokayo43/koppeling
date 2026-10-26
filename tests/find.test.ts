@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import { toDirectory } from "../src/directory";
 import { find, FIND_LIMIT, stems } from "../src/find";
+import { warehouseDirectory } from "./fixtures/doors";
 import { sketched } from "./support/operations";
 
 const names = (operations: readonly { readonly name: string }[]) =>
@@ -65,4 +66,37 @@ test("find answers at most ten, best first, ties in name order", () => {
 
   expect(found).toHaveLength(FIND_LIMIT);
   expect(found).toEqual(found.toSorted());
+});
+
+test("an area or a leaf named whole by the words outranks words matched across other names", () => {
+  // Shaped like the API's door, where "product categories list" never
+  // surfaced the area named "product-categories": summing word matches alone
+  // ranks first whatever carries the rare "list" in its name.
+  const { operations } = sketched([
+    { name: "admin.products.categories.get", area: "admin.products", fields: ["search"] },
+    { name: "admin.products.categories.id.get", area: "admin.products", fields: ["id"] },
+    { name: "admin.products.get", area: "admin.products", fields: ["search", "category"] },
+    { name: "product-categories.get" },
+    { name: "product-categories.id.get", fields: ["id"] },
+    { name: "products.get", fields: ["search", "category", "page"] },
+    { name: "media-collections.list.get" },
+  ]);
+
+  expect(
+    names(
+      find(
+        toDirectory({ operations, skipped: [], undescribed: [] }).search,
+        "product categories list",
+      ),
+    ).slice(0, 2),
+  ).toEqual(["product-categories.get", "product-categories.id.get"]);
+});
+
+test("a one-word area named by the words counts once, as any word does", () => {
+  // "bestellingen" is the warehouse's area of purchase orders; the person asks
+  // about orders to pick. Counting a one-word area again for being named whole
+  // ranks the purchase orders first.
+  expect(
+    names(find(warehouseDirectory().search, "welke bestellingen moeten nog gepickt worden"))[0],
+  ).toBe("orders.updatePicking");
 });

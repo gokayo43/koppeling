@@ -339,3 +339,54 @@ test("the boot report counts each area's operations and names what was skipped",
     undescribed: [],
   });
 });
+
+test("a person is offered only what the host's allows admits: listed, found, described and run", async () => {
+  // The likeliest wrong filters the list alone, so a name the person was not
+  // shown still runs when typed, or still answers describe and find.
+  using idp = await identityProvider();
+  const { door, invoked } = warehouseDoor(() => ({
+    actor: warehouseAdmin,
+    allows: (operation) => operation.area !== "suppliers" && operation.name !== "orders.cancel",
+  }));
+  const client = await clientOf(door.handle, await idp.token(), "modern");
+
+  expect(client.getInstructions()).not.toContain("- suppliers");
+  const areas = await client.callTool({ name: "list", arguments: {} });
+  expect(JSON.stringify(areas.structuredContent)).not.toContain("suppliers");
+  const orders = await client.callTool({ name: "list", arguments: { area: "orders" } });
+  expect(JSON.stringify(orders.structuredContent)).not.toContain("orders.cancel");
+  const found = await client.callTool({ name: "find", arguments: { words: "leverancier" } });
+  expect(JSON.stringify(found.structuredContent)).not.toContain("suppliers.");
+  const described = await client.callTool({
+    name: "describe",
+    arguments: { name: "suppliers.delete" },
+  });
+  expect(described.isError).toBe(true);
+
+  const refused = await client.callTool({
+    name: "write",
+    arguments: { name: "orders.cancel", input: { orderId: 1 } },
+  });
+  expect(refused.isError).toBe(true);
+  const text = refused.content.flatMap((block) => (block.type === "text" ? [block.text] : []));
+  expect(text.join("")).toStartWith(
+    'Onbekende operatie "orders.cancel". Kies een naam uit deze lijst:',
+  );
+  expect(text.join("")).not.toContain('"orders.cancel",');
+  expect(invoked).toEqual([]);
+  await client.close();
+});
+
+test("an allows that throws answers 503 with the door's sentence, as an actorFor that rejects does", async () => {
+  using idp = await identityProvider();
+  const { door } = warehouseDoor(() => ({
+    actor: warehouseAdmin,
+    allows: () => {
+      throw new Error("permissions table unreachable");
+    },
+  }));
+  const response = await door.handle(mcpPost(await idp.token()));
+
+  expect(response.status).toBe(503);
+  expect(await response.text()).toBe(JSON.stringify({ error: copy.personUnreachable }));
+});

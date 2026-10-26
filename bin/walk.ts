@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import { instructionsFor, type Directory } from "../src/directory";
 import { reporter } from "../src/events";
+import { Pages } from "../src/pages";
 import { mcpServer } from "../src/tools";
 import {
   apiCaller,
@@ -25,7 +26,13 @@ import {
 import { glossary } from "../tests/fixtures/warehouse";
 
 async function connect<Actor>(directory: Directory<Actor>, words: string, actor: Actor) {
-  const session = { directory, actor, claims: walker, report: reporter(undefined) };
+  const session = {
+    directory,
+    actor,
+    claims: walker,
+    report: reporter(undefined),
+    pages: new Pages(),
+  };
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await mcpServer(session, instructionsFor(words, directory)).connect(serverSide);
   const client = new Client({ name: "walk", version: "1" });
@@ -50,7 +57,7 @@ const Found = z.object({
       name: z.string(),
       area: z.string(),
       kind: z.string(),
-      summary: z.string().nullable(),
+      summary: z.string(),
     }),
   ),
   message: z.string().optional(),
@@ -73,7 +80,7 @@ for (const phrasing of phrasings) {
     const operations = found.operations;
     if (operations.length === 0) out.push(`   ${found.message ?? ""}`);
     operations.forEach((operation, rank) =>
-      out.push(`   ${rank + 1}. ${operation.name} (${operation.kind}) ${operation.summary ?? ""}`),
+      out.push(`   ${rank + 1}. ${operation.name} (${operation.kind}) ${operation.summary}`),
     );
     const area = operations[0]?.area;
     const listed = await door.client.callTool({

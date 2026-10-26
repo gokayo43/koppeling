@@ -10,3 +10,4 @@ which cars fit this product
 tel de voorraad op locatie A3
 print een label voor deze bestelling
 wijzig het telefoonnummer van klant
+product categories list

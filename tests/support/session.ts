@@ -3,7 +3,9 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { JWTPayload } from "jose";
 
 import { instructionsFor, type Directory } from "../../src/directory";
-import { reporter, type KoppelingEvent } from "../../src/events";
+import type { KoppelingEvent } from "../../src/door";
+import { reporter } from "../../src/events";
+import { Pages } from "../../src/pages";
 import type { Session } from "../../src/run";
 import { mcpServer } from "../../src/tools";
 
@@ -14,7 +16,13 @@ export function sessionOf<Actor>(
 ): { readonly session: Session<Actor>; readonly events: KoppelingEvent[] } {
   const events: KoppelingEvent[] = [];
   return {
-    session: { directory, actor, claims, report: reporter((event) => events.push(event)) },
+    session: {
+      directory,
+      actor,
+      claims,
+      report: reporter((event) => events.push(event)),
+      pages: new Pages(),
+    },
     events,
   };
 }

@@ -102,17 +102,29 @@ test("list without an area answers the areas; with an exact one, its operations"
       {
         name: "printer.printBarcodeLabel",
         kind: "write",
+        destructive: true,
+        idempotent: false,
         summary: "Print een barcodelabel met een vrije tekst.",
       },
       {
         name: "printer.printBatchStickers",
         kind: "write",
+        destructive: true,
+        idempotent: false,
         summary: "Print stickers voor meerdere sku's tegelijk.",
       },
-      { name: "printer.printShelve", kind: "write", summary: "Print het label van een plank." },
+      {
+        name: "printer.printShelve",
+        kind: "write",
+        destructive: true,
+        idempotent: false,
+        summary: "Print het label van een plank.",
+      },
       {
         name: "printer.printSticker",
         kind: "write",
+        destructive: true,
+        idempotent: false,
         summary: "Print een productsticker voor een sku.",
       },
       {
@@ -154,6 +166,8 @@ test("describe answers the whole operation, its side-effect line included", asyn
     name: "counting.countRow",
     area: "counting",
     kind: "write",
+    destructive: true,
+    idempotent: false,
     sideEffect: "de voorraad van die plank wordt de telling.",
     input: {
       type: "object",
@@ -168,6 +182,36 @@ test("describe answers the whole operation, its side-effect line included", asyn
   expect(bySku.structuredContent).toMatchObject({
     sideEffect: null,
     output: { type: "object", required: ["sku", "total", "shelves"] },
+  });
+});
+
+test("an operation the program wrote no line for is described by the door's line, and listed with it", async () => {
+  await using door = await connected(apiDirectory(), apiCaller);
+  const described = await door.client.callTool({
+    name: "describe",
+    arguments: { name: "product-categories.id.get" },
+  });
+  const listed = await door.client.callTool({
+    name: "list",
+    arguments: { area: "product-categories" },
+  });
+
+  expect(described.structuredContent).toMatchObject({
+    kind: "read",
+    destructive: false,
+    idempotent: true,
+    description: "Leest: product categories id. Invoer: id.",
+  });
+  expect(listed.structuredContent).toEqual({
+    area: "product-categories",
+    operations: [
+      { name: "product-categories.get", kind: "read", summary: "Leest: product categories." },
+      {
+        name: "product-categories.id.get",
+        kind: "read",
+        summary: "Leest: product categories id. Invoer: id.",
+      },
+    ],
   });
 });
 
@@ -194,6 +238,57 @@ test("an input the program's schema rejects answers a tool error carrying the sc
 
   expect(result.isError).toBe(true);
   expect(textOf(result)).toBe('Expected number, actual "1001"');
+  expect(result.structuredContent).toMatchObject({
+    refusal: 'Expected number, actual "1001"',
+    details: { issues: [{ path: ["orderId"], message: 'Expected number, actual "1001"' }] },
+  });
+});
+
+test("a misnamed field is refused before the program runs, naming the unknown keys and the allowed ones there", async () => {
+  // The program's own validator drops an unknown key without a word, so
+  // "statsu" was answered as if no status had been asked for.
+  await using door = await warehouse();
+  const misnamed = await door.client.callTool({
+    name: "read",
+    arguments: { name: "orders.list", input: { statsu: "processing" } },
+  });
+
+  expect(misnamed.isError).toBe(true);
+  expect(door.invoked).toEqual([]);
+  const strays = [{ at: "input", unknown: ["statsu"], allowed: ["status", "page"] }];
+  expect(textOf(misnamed)).toBe(copy.strayKeys(strays));
+  expect(misnamed.structuredContent).toEqual({ refusal: copy.strayKeys(strays), details: strays });
+
+  const correct = await door.client.callTool({
+    name: "read",
+    arguments: { name: "orders.list", input: { status: "processing" } },
+  });
+  expect(correct.isError).toBeFalsy();
+  expect(door.invoked).toEqual(["orders.list"]);
+});
+
+test("a misnamed query field on an Elysia route is refused at its part, and a correct one passes", async () => {
+  const invoked: string[] = [];
+  await using door = await connected(
+    apiDirectory((route) => invoked.push(route)),
+    apiCaller,
+  );
+  const misnamed = await door.client.callTool({
+    name: "read",
+    arguments: { name: "products.get", input: { query: { serach: "rem" } } },
+  });
+
+  expect(misnamed.isError).toBe(true);
+  expect(invoked).toEqual([]);
+  expect(textOf(misnamed)).toBe(
+    copy.strayKeys([{ at: "input.query", unknown: ["serach"], allowed: ["search", "page"] }]),
+  );
+  const correct = await door.client.callTool({
+    name: "read",
+    arguments: { name: "products.get", input: { query: { search: "rem" } } },
+  });
+  expect(correct.structuredContent).toEqual({ result: { data: [] } });
+  expect(invoked).toEqual(["/api/v1/products/"]);
 });
 
 test("a program's own refusal answers a tool error with the program's sentence, and its guard ran", async () => {
@@ -401,4 +496,8 @@ test("an Elysia route's answer and refusal pass through call", async () => {
   expect(textOf(refused)).toBe(
     'HTTP 404: {"error":{"code":"plate_not_found","message":"Kenteken niet gevonden"}}',
   );
+  expect(refused.structuredContent).toEqual({
+    refusal: textOf(refused),
+    details: { error: { code: "plate_not_found", message: "Kenteken niet gevonden" } },
+  });
 });

@@ -15,7 +15,9 @@ export default defineConfig({
   // emitted bundle may name at all, so a dependency added without a ruling
   // fails the build. The peers are imported for their types alone.
   deps: {
-    onlyImport: ["@modelcontextprotocol/server", "effect", "jose", "@trpc/server", "elysia"],
+    onlyImport: ["@modelcontextprotocol/server", "jose", "@trpc/server", "elysia"],
+    alwaysBundle: ["effect"],
+    onlyBundle: ["effect"],
   },
   // Nothing here is published to a registry: a host installs the git repo.
   publint: false,

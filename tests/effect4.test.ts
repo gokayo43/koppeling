@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { initTRPC } from "@trpc/server";
 import { Schema } from "effect4";
 
+import { strayKeys } from "../src/closed";
 import { fromTrpcRouter } from "../src/index";
 
 /** A signal no case aborts, for a run the case lets finish. */
@@ -53,4 +54,26 @@ test("an Effect 4 input handed over as a Standard Schema alone fails the boot, s
   expect(() => fromTrpcRouter(validatorOnly, { contextFor: () => ({}) })).toThrow(
     "toStandardJSONSchemaV1",
   );
+});
+
+test("an Effect 4 struct is shown closed, since Effect drops a key it does not name, and a stray key is refused", async () => {
+  // Effect 4 writes additionalProperties: true for a struct yet drops the
+  // keys it does not name when it decodes; showing it open would let a
+  // misnamed field through unanswered, as the probe saw.
+  const Shelf = Schema.Struct({ code: Schema.String, place: Schema.Struct({ row: Schema.Int }) });
+  const standard = Schema.toStandardJSONSchemaV1(Schema.toStandardSchemaV1(Shelf));
+  expect(await standard["~standard"].validate({ code: "A", place: { row: 1 }, extra: 1 })).toEqual({
+    value: { code: "A", place: { row: 1 } },
+  });
+  const [put] = fromTrpcRouter(t.router({ put: t.procedure.input(standard).mutation(() => 1) }), {
+    contextFor: () => ({}),
+  }).operations;
+
+  expect(put?.input).toMatchObject({
+    additionalProperties: false,
+    properties: { place: { additionalProperties: false } },
+  });
+  expect(strayKeys(put?.input ?? {}, { code: "A", place: { row: 1, rij: 2 } })).toEqual([
+    { at: "input.place", unknown: ["rij"], allowed: ["row"] },
+  ]);
 });

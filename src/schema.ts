@@ -1,7 +1,7 @@
 import { JSONSchema, Schema } from "effect";
 import * as AST from "effect/SchemaAST";
 
-import { isJsonObject, toJson, type Json, type JsonSchema } from "./json";
+import { isJsonArray, isJsonObject, toJson, type Json, type JsonSchema } from "./json";
 
 /** The symbol every TypeBox schema carries its kind under. */
 export const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
@@ -82,7 +82,26 @@ function standardJsonSchema(schema: object): Json | undefined {
   const input = converter.input;
   if (typeof input !== "function") return undefined;
   const written: unknown = input.call(converter, { target: "draft-2020-12" });
-  return toJson(written);
+  const json = toJson(written);
+  return "vendor" in props && props.vendor === "effect" ? withoutDroppedOpenness(json) : json;
+}
+
+/**
+ * Effect 4 writes `additionalProperties: true` on a struct, yet its decoding
+ * drops every key the struct does not name (measured on 4.0.5, and pinned in
+ * tests/effect4.test.ts), so the door reads that `true` as a struct that names
+ * its keys and leaves it to closing; a record's schema stays.
+ */
+function withoutDroppedOpenness(json: Json): Json {
+  if (isJsonArray(json)) return json.map((item) => withoutDroppedOpenness(item));
+  if (!isJsonObject(json)) return json;
+  return Object.fromEntries(
+    Object.entries(json).flatMap(([key, value]): [string, Json][] =>
+      key === "additionalProperties" && value === true && "properties" in json
+        ? []
+        : [[key, withoutDroppedOpenness(value)]],
+    ),
+  );
 }
 
 /**
@@ -96,4 +115,20 @@ export function allOf(parts: readonly Described[]): Described | undefined {
   const [only, ...more] = schemas;
   if (only === undefined) return undefined;
   return { schema: more.length ? { allOf: [only, ...more] } : only };
+}
+
+/**
+ * A schema's properties, its own and those of its `allOf`, `anyOf` and `oneOf`
+ * parts, each with its schema: the fields an object of it may carry.
+ */
+export function properties(schema: JsonSchema): [string, JsonSchema][] {
+  const own = schema["properties"];
+  const named: [string, JsonSchema][] = isJsonObject(own)
+    ? Object.entries(own).flatMap(([name, child]) => (isJsonObject(child) ? [[name, child]] : []))
+    : [];
+  const parts = ["allOf", "anyOf", "oneOf"].flatMap((key) => {
+    const list = schema[key];
+    return isJsonArray(list) ? list.filter(isJsonObject) : [];
+  });
+  return [...named, ...parts.flatMap(properties)];
 }

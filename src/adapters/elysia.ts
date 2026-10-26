@@ -3,12 +3,15 @@ import type { AnyElysia } from "elysia";
 import {
   catalogue,
   firstSegment,
+  koppelingMeta,
   type Catalogue,
+  type KoppelingMeta,
   type Declared,
   type Note,
   type Outcome,
 } from "../catalogue";
 import { copy } from "../copy";
+import { derivedLine, fieldNames, type Action } from "../derived";
 import {
   isJsonArray,
   isJsonObject,
@@ -21,8 +24,11 @@ import { allOf, describeSchema, TYPEBOX_KIND, type Described } from "../schema";
 
 declare module "elysia" {
   interface DocumentDecoration {
-    /** `false` keeps this route from the koppeling: the door skips it and names it in its boot report. */
-    koppeling?: boolean;
+    /**
+     * What the route says to the koppeling, over what the door derives; `false`
+     * keeps the route from it, and the door names it in its boot report.
+     */
+    koppeling?: false | KoppelingMeta;
   }
 }
 
@@ -72,7 +78,9 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       continue;
     }
     const detail = field(hooks, "detail");
-    if (field(detail, "koppeling") === false) {
+    const owner = `Elysia route ${route.method} ${route.path}`;
+    const meta = koppelingMeta(field(detail, "koppeling"), `${owner}: detail.koppeling`);
+    if (meta === "withheld") {
       skipped.push({ name, reason: "withheld by the program" });
       continue;
     }
@@ -84,17 +92,17 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       skipped.push({ name, reason: `the mount itself, which names no area` });
       continue;
     }
-    const owner = `Elysia route ${route.method} ${route.path}`;
+    const method = route.method;
     const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
     schemas.set("params", schemas.get("params") ?? pathParameters(segments));
-    const method = route.method;
     const own = ownStore(app, route.method, route.path, owner);
     declared.push({
       name,
       area: options.area?.(named) ?? firstSegment(name),
       kind: method === "GET" || method === "HEAD" ? "read" : "write",
-      description: description(hooks),
-      input: inputSchema(schemas),
+      ...lineOf(meta.description ?? description(hooks), method, named, schemas),
+      ...hints(method, meta),
+      input: inputSchema(schemas, carriesBody(method)),
       output: responseSchema(app, hooks, owner),
       run: (actor, input, signal) =>
         request(
@@ -106,6 +114,54 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
     });
   }
   return catalogue(declared, skipped);
+}
+
+/**
+ * What a method says about a route, the HTTP way: GET and HEAD change
+ * nothing, PUT replaces and DELETE deletes, each to the same end however
+ * often, and POST and PATCH may change more each time. Any other method is
+ * taken to be the riskiest; `detail.koppeling` overrides either hint.
+ */
+function hints(method: string, meta: KoppelingMeta) {
+  const safe = method === "GET" || method === "HEAD";
+  const derived =
+    safe || method === "PUT" || method === "DELETE" || method === "POST" || method === "PATCH"
+      ? {
+          destructive: method === "DELETE",
+          idempotent: safe || method === "PUT" || method === "DELETE",
+        }
+      : { destructive: true, idempotent: false };
+  return {
+    destructive: meta.destructive ?? derived.destructive,
+    idempotent: meta.idempotent ?? derived.idempotent,
+  };
+}
+
+const ACTIONS = new Map<string, Action>([
+  ["GET", "read"],
+  ["HEAD", "read"],
+  ["POST", "post"],
+  ["PUT", "put"],
+  ["PATCH", "patch"],
+  ["DELETE", "delete"],
+]);
+
+/** The route's written line, or the door's from its path's words and its declared fields. */
+function lineOf(
+  written: string | undefined,
+  method: string,
+  named: readonly string[],
+  schemas: ReadonlyMap<Part, Described | undefined>,
+) {
+  if (written !== undefined) return { description: written, written: true };
+  const fields = PARTS.flatMap((part) => {
+    const schema = schemas.get(part);
+    return schema !== undefined && "schema" in schema ? fieldNames(schema.schema) : [];
+  });
+  return {
+    description: derivedLine(ACTIONS.get(method) ?? "run", named.join("."), [...new Set(fields)]),
+    written: false,
+  };
 }
 
 function nameSegment(segment: string): string {
@@ -149,24 +205,49 @@ function parameterName(segment: string): string {
   return segment.slice(1).replace(/\?$/, "");
 }
 
-/** The route's parts as one object: `{ params, query, body }`, each as the route declares it. */
-function inputSchema(schemas: ReadonlyMap<Part, Described | undefined>): Described {
+const carriesBody = (method: string) => method !== "GET" && method !== "HEAD";
+
+/**
+ * A part the route declares no schema for, which its handler may still read:
+ * the door passes it on as it is, so it shows it open. An undeclared query is
+ * an object of any keys; an undeclared body any value.
+ */
+const UNDECLARED = {
+  query: { type: "object", additionalProperties: true, description: copy.undeclaredPart },
+  body: { description: copy.undeclaredPart },
+} as const satisfies { readonly [P in "query" | "body"]: JsonSchema };
+
+/**
+ * The route's parts as one object: `{ params, query, body }`, each as the
+ * route declares it, and a query, and a body where the method carries one,
+ * open where it declares none.
+ */
+function inputSchema(
+  schemas: ReadonlyMap<Part, Described | undefined>,
+  withBody: boolean,
+): Described {
   const present: [Part, JsonSchema][] = [];
+  const required: Part[] = [];
   const reasons: string[] = [];
   for (const part of PARTS) {
     const described = schemas.get(part);
-    if (described === undefined) continue;
-    if ("schema" in described) present.push([part, described.schema]);
-    else reasons.push(`${part}: ${described.undescribable}`);
+    if (described === undefined) {
+      if (part === "query" || (part === "body" && withBody)) present.push([part, UNDECLARED[part]]);
+      continue;
+    }
+    if ("undescribable" in described) {
+      reasons.push(`${part}: ${described.undescribable}`);
+      continue;
+    }
+    present.push([part, described.schema]);
+    if (part !== "query" || requires(described.schema)) required.push(part);
   }
   if (reasons.length) return { undescribable: reasons.join("; ") };
   return {
     schema: {
       type: "object",
       properties: Object.fromEntries(present),
-      required: present
-        .filter(([part, schema]) => part !== "query" || requires(schema))
-        .map(([part]) => part),
+      required,
       additionalProperties: false,
     },
   };
@@ -325,14 +406,14 @@ async function request(
   if ("refusal" in url) return url;
   const headers = new Headers(target.headers);
   const body = parts["body"];
-  const carriesBody = body !== undefined && target.method !== "GET" && target.method !== "HEAD";
-  if (carriesBody) headers.set("content-type", "application/json");
+  const sendsBody = body !== undefined && carriesBody(target.method);
+  if (sendsBody) headers.set("content-type", "application/json");
   const response = await app.handle(
     new Request(url.href, {
       method: target.method,
       headers,
       signal,
-      ...(carriesBody ? { body: JSON.stringify(body) } : {}),
+      ...(sendsBody ? { body: JSON.stringify(body) } : {}),
     }),
   );
   // From here the program has been reached. A 5xx is the program failing, and
@@ -342,13 +423,28 @@ async function request(
   try {
     const text = await bodyOf(response, signal);
     if (response.status >= 500) return { failed: new Error(`HTTP ${response.status}: ${text}`) };
-    if (!response.ok) return { refusal: `HTTP ${response.status}: ${text}` };
+    const json = response.headers.get("content-type")?.includes("json") === true;
+    if (!response.ok) {
+      const refusal = `HTTP ${response.status}: ${text}`;
+      const details = json ? parsedOrNothing(text) : undefined;
+      return details === undefined ? { refusal } : { refusal, details };
+    }
     if (text === "") return { value: null };
-    if (!response.headers.get("content-type")?.includes("json")) return { value: text };
+    if (!json) return { value: text };
     const parsed: unknown = JSON.parse(text);
     return { value: toJson(parsed) };
   } catch (cause) {
     return { failed: cause };
+  }
+}
+
+/** A refusal's JSON body as data, or nothing when it does not parse: its text still goes back. */
+function parsedOrNothing(text: string): Json | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return toJson(parsed);
+  } catch {
+    return undefined;
   }
 }
 
