@@ -88,7 +88,7 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
     const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
     schemas.set("params", schemas.get("params") ?? pathParameters(segments));
     const method = route.method;
-    const reserved = reservedValues(app.routes, route);
+    const own = ownStore(app, route.method, route.path);
     declared.push({
       name,
       area: options.area?.(named) ?? firstSegment(name),
@@ -99,7 +99,7 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       run: (actor, input, signal) =>
         request(
           app,
-          { method, path: route.path, reserved, headers: options.credential(actor) },
+          { app, method, path: route.path, own, headers: options.credential(actor) },
           input,
           signal,
         ),
@@ -237,46 +237,60 @@ function description(
 }
 
 interface Target {
+  readonly app: AnyElysia;
   readonly method: string;
   readonly path: string;
-  /** Per path parameter, the values that would reach a static sibling route instead. */
-  readonly reserved: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The route's own store in Elysia's router; undefined for a route without parameters. */
+  readonly own: Reached;
   readonly headers: { readonly [header: string]: string };
 }
 
-const isParameter = (segment: string) => segment.startsWith(":") || segment === "*";
+/** What a path reaches in the app: a static route's index, or a parameterised route's store. */
+type Reached = number | object | undefined;
 
 /**
- * For each of a route's path parameters, the values its sibling routes spell
- * as a static segment at that position. Elysia's router prefers a static
- * segment to a parameter, so a call with such a value would run the sibling
- * (perhaps withheld, hidden or guarded otherwise) under this operation's name.
- * A sibling answers the same method, has as many segments, and agrees with
- * this route wherever both are static.
+ * The route Elysia itself sends `method` and `path` to, read from its own
+ * router in the order its generated handler asks (`composeGeneralHandler` in
+ * Elysia 1.4.30): a static route first, where HEAD falls back to GET or ALL;
+ * then the parameterised routes, where HEAD tries GET before its own, then ALL.
  */
-function reservedValues(
-  routes: readonly { readonly method: string; readonly path: string }[],
-  route: { readonly method: string; readonly path: string },
-): ReadonlyMap<string, ReadonlySet<string>> {
-  const own = route.path.split("/");
-  const reserved = new Map<string, Set<string>>();
-  for (const sibling of routes) {
-    if (sibling.method !== route.method && sibling.method !== "ALL") continue;
-    const theirs = sibling.path.split("/");
-    if (theirs.length !== own.length) continue;
-    const agrees = own.every(
-      (segment, index) =>
-        isParameter(segment) || isParameter(theirs[index] ?? "") || segment === theirs[index],
-    );
-    if (!agrees) continue;
-    own.forEach((segment, index) => {
-      const value = theirs[index] ?? "";
-      if (!segment.startsWith(":") || isParameter(value)) return;
-      const name = parameterName(segment);
-      reserved.set(name, (reserved.get(name) ?? new Set()).add(value));
-    });
+function reached(app: AnyElysia, method: string, path: string): Reached {
+  const decoded = path.split("/").map((segment) => decodeURIComponent(segment));
+  for (const [template, methods] of Object.entries(app.router.static)) {
+    const segments = template.split("/");
+    if (
+      segments.length !== decoded.length ||
+      segments.some((segment, i) => segment !== decoded[i])
+    ) {
+      continue;
+    }
+    const index =
+      methods[method] ?? (method === "HEAD" ? (methods["GET"] ?? methods["ALL"]) : methods["ALL"]);
+    if (index !== undefined) return index;
   }
-  return reserved;
+  const router = app.router.http;
+  const found =
+    (method === "HEAD" ? router.find("GET", path) : null) ??
+    router.find(method, path) ??
+    router.find("ALL", path);
+  return found?.store;
+}
+
+/** A path parameter value no route spells, to find a route's own store by. */
+const PROBE = "koppeling-probe-3f9c";
+
+/**
+ * The route's own store in Elysia's router, found by a path only it matches;
+ * undefined for a route without parameters, which Elysia keeps as a static
+ * route and which no value can send elsewhere.
+ */
+function ownStore(app: AnyElysia, method: string, path: string): Reached {
+  if (!path.includes(":") && !path.includes("*")) return undefined;
+  const probe = path
+    .split("/")
+    .map((segment) => (segment.startsWith(":") || segment === "*" ? PROBE : segment))
+    .join("/");
+  return app.router.http.find(method, probe)?.store;
 }
 
 async function request(
@@ -346,12 +360,9 @@ function urlOf(
   query: Json | undefined,
 ): { readonly href: string } | { readonly refusal: string } {
   const given: JsonObject = isJsonObject(params) ? params : {};
-  const segments: string[] = [];
+  const values = new Map<string, string>();
   for (const segment of target.path.split("/")) {
-    if (!segment.startsWith(":")) {
-      segments.push(segment);
-      continue;
-    }
+    if (!segment.startsWith(":")) continue;
     const name = parameterName(segment);
     const value = given[name];
     if (value === undefined) {
@@ -365,17 +376,47 @@ function urlOf(
     if (encoded === "" || encoded === "." || encoded === "..") {
       return { refusal: copy.badPathParameter(name) };
     }
-    if (target.reserved.get(name)?.has(encoded)) {
-      return { refusal: copy.reservedPathParameter(name, encoded) };
-    }
-    segments.push(encoded);
+    values.set(name, encoded);
+  }
+  const path = pathOf(target.path, (name) => values.get(name));
+  if (target.own !== undefined && reached(target.app, target.method, path) !== target.own) {
+    return { refusal: copy.routedElsewhere(culprits(target, values)) };
   }
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(isJsonObject(query) ? query : {})) {
     for (const item of isJsonArray(value) ? value : [value]) search.append(key, textOf(item));
   }
   const queryString = search.size ? `?${search.toString()}` : "";
-  return { href: `${ORIGIN}${segments.join("/")}${queryString}` };
+  return { href: `${ORIGIN}${path}${queryString}` };
+}
+
+/** A route's path with each parameter's value put in, an optional one left out when it has none. */
+function pathOf(template: string, valueOf: (name: string) => string | undefined): string {
+  return template
+    .split("/")
+    .flatMap((segment) => {
+      if (!segment.startsWith(":")) return [segment];
+      const value = valueOf(parameterName(segment));
+      return value === undefined ? [] : [value];
+    })
+    .join("/");
+}
+
+/**
+ * The parameters whose value alone sends the call elsewhere, the others left
+ * at a value no route spells; all of them when only their combination does.
+ */
+function culprits(target: Target, values: ReadonlyMap<string, string>): string[] {
+  const names = [...values.keys()];
+  const alone = names.filter(
+    (name) =>
+      reached(
+        target.app,
+        target.method,
+        pathOf(target.path, (other) => (other === name ? values.get(other) : PROBE)),
+      ) !== target.own,
+  );
+  return alone.length ? alone : names;
 }
 
 function textOf(value: Json): string {

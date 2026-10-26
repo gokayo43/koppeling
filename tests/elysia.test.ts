@@ -2,9 +2,10 @@ import { expect, test } from "bun:test";
 
 import { check } from "@gokayo43/dev-config/property";
 import { Schema } from "effect";
-import { Elysia, t } from "elysia";
+import { Elysia, t, type AnyElysia } from "elysia";
 import { array, constantFrom, integer, property, tuple, uniqueArray } from "fast-check";
 
+import { copy } from "../src/copy";
 import { fromElysia } from "../src/index";
 import { apiApp, credential, type ApiActor } from "./fixtures/api";
 import { apiCaller } from "./fixtures/doors";
@@ -330,6 +331,82 @@ test("a path parameter equal to a static sibling route's segment is refused, so 
     value: "export2",
   });
   expect(ran).toEqual(["order exports", "order export2"]);
+});
+
+/**
+ * An app where `GET`/`HEAD /api/v1/orders/:id` and `GET /api/v1/orders/:id/lines/:line`
+ * sit beside siblings Elysia's router prefers for some values; every handler
+ * answers its own name, so the app itself says which route a path reaches.
+ */
+function siblingApp() {
+  const ran: string[] = [];
+  const answer = (route: string) => () => {
+    ran.push(route);
+    return route;
+  };
+  const app = new Elysia()
+    .get("/api/v1/orders/:id", answer("order"))
+    .head("/api/v1/orders/:id", answer("order head"))
+    .get("/api/v1/orders/:id/lines/:line", answer("line"))
+    .get("/api/v1/orders/export/:format?", answer("export"), { detail: { koppeling: false } })
+    .get("/api/v1/orders/files/*", answer("files"), { detail: { koppeling: false } })
+    .get("/api/v1/orders/a b", answer("spaced"), { detail: { koppeling: false } })
+    .get("/api/v1/orders/report", answer("report"), { detail: { hide: true } });
+  return { app, ran };
+}
+
+/** What Elysia itself runs for a request, by the handler's own name. */
+async function reachedBy(app: AnyElysia, method: string, path: string, ran: string[]) {
+  ran.length = 0;
+  await app.handle(new Request(`http://localhost${path}`, { method }));
+  return ran[0];
+}
+
+test("a path parameter that would reach another route, by Elysia's own router, is refused", async () => {
+  const { app, ran } = siblingApp();
+  const byName = new Map(
+    fromElysia(app, { credential, mount: "/api/v1" }).operations.map((op) => [op.name, op]),
+  );
+  const run = async (name: string, params: { readonly [key: string]: string }) => {
+    ran.length = 0;
+    const outcome = await byName.get(name)?.run(apiCaller, { params }, unaborted);
+    return { outcome, ran: [...ran] };
+  };
+  const orders = (id: string) => `/api/v1/orders/${encodeURIComponent(id)}`;
+
+  // An optional-parameter sibling, an encoded static one and a plain static one:
+  // Elysia itself sends these ids elsewhere, so the door refuses them, for GET
+  // and for HEAD, and runs nothing.
+  for (const id of ["export", "a b", "report"]) {
+    expect(await reachedBy(app, "GET", orders(id), ran)).not.toBe("order");
+    expect(await run("orders.id.get", { id })).toEqual({
+      outcome: { refusal: copy.routedElsewhere(["id"]) },
+      ran: [],
+    });
+    expect((await run("orders.id.head", { id })).outcome).toHaveProperty("refusal");
+  }
+  // A wildcard sibling shorter than the route catches it at depth.
+  expect(await reachedBy(app, "GET", "/api/v1/orders/files/lines/3", ran)).toBe("files");
+  expect(await run("orders.id.lines.line.get", { id: "files", line: "3" })).toEqual({
+    outcome: { refusal: copy.routedElsewhere(["id"]) },
+    ran: [],
+  });
+  // Elysia answers HEAD with a matching GET route before its own HEAD route,
+  // so the HEAD handler is never what runs here, and the door says so.
+  expect(await reachedBy(app, "HEAD", orders("exports"), ran)).toBe("order");
+  expect((await run("orders.id.head", { id: "exports" })).outcome).toHaveProperty("refusal");
+  // Values no sibling spells go through to the operation's own route.
+  for (const id of ["exports", "export2", "files", "a-b"]) {
+    expect(await reachedBy(app, "GET", orders(id), ran)).toBe("order");
+    expect(await run("orders.id.get", { id })).toEqual({
+      outcome: { value: "order" },
+      ran: ["order"],
+    });
+  }
+  expect(await run("orders.id.lines.line.get", { id: "1001", line: "3" })).toEqual({
+    outcome: { value: "line" },
+    ran: ["line"],
+  });
 });
 
 test("a route the program withholds from the door is skipped and named, apart from hidden ones", () => {
