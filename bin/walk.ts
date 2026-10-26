@@ -57,7 +57,7 @@ const Found = z.object({
       name: z.string(),
       area: z.string(),
       kind: z.string(),
-      summary: z.string().nullable(),
+      summary: z.string(),
     }),
   ),
   message: z.string().optional(),
@@ -80,7 +80,7 @@ for (const phrasing of phrasings) {
     const operations = found.operations;
     if (operations.length === 0) out.push(`   ${found.message ?? ""}`);
     operations.forEach((operation, rank) =>
-      out.push(`   ${rank + 1}. ${operation.name} (${operation.kind}) ${operation.summary ?? ""}`),
+      out.push(`   ${rank + 1}. ${operation.name} (${operation.kind}) ${operation.summary}`),
     );
     const area = operations[0]?.area;
     const listed = await door.client.callTool({

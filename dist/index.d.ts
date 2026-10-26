@@ -152,7 +152,7 @@ type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
  * What the door tells the host's logger. `write`: one per call of a write
  * operation, naming the person and the program acting for them. `failure`: a
  * failure the person was answered with the door's own sentence for; its
- * `operation` is null when the sign-in failed (the key set, or `actorFor`).
+ * `operation` is null when the sign-in failed (the key set, `actorFor` or `allows`).
  */
 type KoppelingEvent = {
   readonly kind: "write";
