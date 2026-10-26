@@ -16,31 +16,41 @@ function isJsonArray(value) {
 function toJson(value) {
 	return walk(value, void 0);
 }
-/** How deep {@link boundedJson} follows a value before it writes `null` instead. */
+/** How deep {@link boundedJson} follows a value, and how many values it writes in all. */
 const BOUND_DEPTH = 12;
+const BOUND_VALUES = 1e4;
+/** What {@link boundedJson} writes where it stops: past its depth or budget, or at a loop. */
+const TRUNCATED = "[ingekort]";
 /**
 * {@link toJson} for a value the program did not mean as an answer (a
-* refusal's details): an `Error` becomes its message, a value met again
-* inside itself becomes `null`, and so does anything deeper than
-* {@link BOUND_DEPTH}, so a looping or endless object cannot exhaust the stack.
+* refusal's details): an `Error` becomes its message, and a value met again
+* inside itself, one deeper than {@link BOUND_DEPTH} and every value past the
+* first {@link BOUND_VALUES} become {@link TRUNCATED}, so a looping object, or
+* one that shares its parts across many parents, writes a bounded answer.
 */
 function boundedJson(value) {
 	return walk(value, {
 		depth: 0,
-		around: /* @__PURE__ */ new Set()
+		around: /* @__PURE__ */ new Set(),
+		budget: { left: BOUND_VALUES }
 	});
 }
 function walk(value, bound) {
+	if (bound !== void 0) {
+		if (bound.budget.left <= 0) return TRUNCATED;
+		bound.budget.left -= 1;
+	}
 	if (typeof value === "string" || typeof value === "boolean") return value;
 	if (typeof value === "number") return Number.isFinite(value) ? value + 0 : null;
 	if (typeof value === "bigint") return value.toString();
 	if (typeof value !== "object" || value === null) return null;
 	if (bound === void 0) return objectToJson(value, void 0);
 	if (value instanceof Error) return value.message;
-	if (bound.depth >= BOUND_DEPTH || bound.around.has(value)) return null;
+	if (bound.depth >= BOUND_DEPTH || bound.around.has(value)) return TRUNCATED;
 	return objectToJson(value, {
 		depth: bound.depth + 1,
-		around: new Set(bound.around).add(value)
+		around: new Set(bound.around).add(value),
+		budget: bound.budget
 	});
 }
 function objectToJson(value, bound) {

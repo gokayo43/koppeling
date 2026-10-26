@@ -358,7 +358,7 @@ test("details that loop, nest errors or cannot be read are bounded, and the refu
 
   expect(await run("looping", undefined)).toEqual({
     refusal: "Lus",
-    details: { opties: ["a"], self: null },
+    details: { opties: ["a"], self: "[ingekort]" },
   });
   const nested = await run("nested", undefined);
   expect(nested).toMatchObject({ refusal: "Genest", details: { reden: "plank vol" } });
