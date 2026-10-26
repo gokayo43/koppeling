@@ -1272,22 +1272,38 @@ function leafOf(operation) {
 	return name.startsWith(`${area}.`) ? name.slice(area.length + 1) : name;
 }
 function toDirectory(catalogue) {
-	const leaves = catalogue.operations.map((operation) => ({
+	const { operations } = catalogue;
+	return assembled(operations, searchIndex(operations.map((operation) => ({
 		operation,
 		leaf: leafOf(operation)
-	}));
+	}))));
+}
+/**
+* The part of `directory` one person may use: the operations `allows`
+* admits, by area, by name and for `find`. The search keeps the whole
+* catalogue's word counts, so a word's rarity, and with it the ranking, is
+* the same for everyone; no operation outside the part is named by it.
+*/
+function admitted(directory, allows) {
+	const kept = directory.operations.filter((operation) => allows(operation));
+	const keep = new Set(kept);
+	return assembled(kept, {
+		entries: directory.search.entries.filter(({ operation }) => keep.has(operation)),
+		carrying: directory.search.carrying
+	});
+}
+function assembled(operations, search) {
 	const grouped = /* @__PURE__ */ new Map();
-	for (const entry of leaves) grouped.set(entry.operation.area, [...grouped.get(entry.operation.area) ?? [], entry]);
-	const areas = new Map(Array.from(grouped, ([name, entries]) => [name, {
-		name,
-		summary: summaryOf(entries.map(({ leaf }) => leaf)),
-		operations: entries.map(({ operation }) => operation)
-	}]));
+	for (const operation of operations) grouped.set(operation.area, [...grouped.get(operation.area) ?? [], operation]);
 	return {
-		operations: catalogue.operations,
-		areas,
-		byName: new Map(catalogue.operations.map((operation) => [operation.name, operation])),
-		search: searchIndex(leaves)
+		operations,
+		areas: new Map(Array.from(grouped, ([name, members]) => [name, {
+			name,
+			summary: summaryOf(members.map(leafOf)),
+			operations: members
+		}])),
+		byName: new Map(operations.map((operation) => [operation.name, operation])),
+		search
 	};
 }
 /** An area's one line: the names of its operations, the area left off. */
@@ -1596,7 +1612,10 @@ function refusalServer(sentence) {
 //#endregion
 //#region src/door.ts
 var Refused = class extends Data.TaggedError("Refused") {};
-/** The host's `actorFor` failed: the token verified, but its person could not be looked up. */
+/**
+* The host's `actorFor`, or its `allows`, failed: the token verified, but its
+* person could not be looked up.
+*/
 var PersonUnreachable = class extends Data.TaggedError("PersonUnreachable") {};
 /**
 * Whether a request's body is JSON-RPC, as every MCP message is: a refused
@@ -1654,6 +1673,18 @@ function koppeling(options) {
 		scopes_supported: options.resource.scopes,
 		bearer_methods_supported: ["header"]
 	};
+	/** The part of the door a person may use, and its outline; the whole door without `allows`. */
+	const personal = (allows) => {
+		if (allows === void 0) return {
+			directory: operations,
+			instructions
+		};
+		const directory = admitted(operations, allows);
+		return {
+			directory,
+			instructions: instructionsFor(options.glossary, directory)
+		};
+	};
 	/**
 	* Only POST: the door keeps no session, so it has no stream to open on a GET
 	* and none to end on a DELETE.
@@ -1664,12 +1695,15 @@ function koppeling(options) {
 	})) : Effect.runPromise(verify(request).pipe(Effect.flatMap((claims) => Effect.tryPromise({
 		try: async () => options.actorFor(claims),
 		catch: (cause) => new PersonUnreachable({ cause })
-	}).pipe(Effect.flatMap((decision) => "refusal" in decision ? Effect.fail(new Refused({ sentence: decision.refusal })) : Effect.promise(() => serve(request, () => mcpServer({
-		directory: operations,
+	}).pipe(Effect.flatMap((decision) => "refusal" in decision ? Effect.fail(new Refused({ sentence: decision.refusal })) : Effect.try({
+		try: () => personal(decision.allows),
+		catch: (cause) => new PersonUnreachable({ cause })
+	}).pipe(Effect.flatMap((part) => Effect.promise(() => serve(request, () => mcpServer({
+		directory: part.directory,
 		actor: decision.actor,
 		claims,
 		report
-	}, instructions)))))), Effect.catchTags({
+	}, part.instructions)))))))), Effect.catchTags({
 		Unauthenticated: ({ sentence, tokenGiven }) => Effect.succeed(refusalResponse(401, sentence, { "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}"${tokenGiven ? ", error=\"invalid_token\"" : ""}` })),
 		Refused: ({ sentence }) => Effect.promise(async () => await isJsonRpc(request) ? serve(request, () => refusalServer(sentence)) : refusalResponse(403, sentence)),
 		PersonUnreachable: ({ cause }) => report({

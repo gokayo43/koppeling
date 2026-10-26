@@ -171,9 +171,15 @@ type KoppelingEvent = {
 };
 //#endregion
 //#region src/door.d.ts
-/** Who a token's person is to the program, or the program's sentence for why they may not come in. */
+/**
+ * Who a token's person is to the program, with the operations they may use
+ * (every one when `allows` is absent), or the program's sentence for why they
+ * may not come in.
+ */
 type ActorDecision<Actor> = {
   readonly actor: Actor;
+  /** Whether the person may use `operation`: the door lists, finds, describes and runs only those. */
+  readonly allows?: (operation: Operation<Actor>) => boolean;
 } | {
   readonly refusal: string;
 };

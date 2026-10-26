@@ -9,14 +9,24 @@ import { Data, Effect } from "effect";
 import type { JWTPayload } from "jose";
 
 import { bearerVerifier, type Identity } from "./auth";
-import type { Catalogue, Note } from "./catalogue";
+import type { Catalogue, Note, Operation } from "./catalogue";
 import { copy } from "./copy";
-import { instructionsFor, toDirectory } from "./directory";
+import { admitted, instructionsFor, toDirectory } from "./directory";
 import { reporter, type KoppelingEvent } from "./events";
 import { mcpServer, refusalServer } from "./tools";
 
-/** Who a token's person is to the program, or the program's sentence for why they may not come in. */
-export type ActorDecision<Actor> = { readonly actor: Actor } | { readonly refusal: string };
+/**
+ * Who a token's person is to the program, with the operations they may use
+ * (every one when `allows` is absent), or the program's sentence for why they
+ * may not come in.
+ */
+export type ActorDecision<Actor> =
+  | {
+      readonly actor: Actor;
+      /** Whether the person may use `operation`: the door lists, finds, describes and runs only those. */
+      readonly allows?: (operation: Operation<Actor>) => boolean;
+    }
+  | { readonly refusal: string };
 
 export interface KoppelingOptions<Actor> {
   readonly catalogue: Catalogue<Actor>;
@@ -50,7 +60,10 @@ export interface Koppeling {
 
 class Refused extends Data.TaggedError("Refused")<{ readonly sentence: string }> {}
 
-/** The host's `actorFor` failed: the token verified, but its person could not be looked up. */
+/**
+ * The host's `actorFor`, or its `allows`, failed: the token verified, but its
+ * person could not be looked up.
+ */
 class PersonUnreachable extends Data.TaggedError("PersonUnreachable")<{
   readonly cause: unknown;
 }> {}
@@ -125,6 +138,13 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
     bearer_methods_supported: ["header"],
   };
 
+  /** The part of the door a person may use, and its outline; the whole door without `allows`. */
+  const personal = (allows: ((operation: Operation<Actor>) => boolean) | undefined) => {
+    if (allows === undefined) return { directory: operations, instructions };
+    const directory = admitted(operations, allows);
+    return { directory, instructions: instructionsFor(options.glossary, directory) };
+  };
+
   /**
    * Only POST: the door keeps no session, so it has no stream to open on a GET
    * and none to end on a DELETE.
@@ -139,14 +159,26 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
                 try: async () => options.actorFor(claims),
                 catch: (cause) => new PersonUnreachable({ cause }),
               }).pipe(
-                Effect.flatMap((decision) =>
+                Effect.flatMap((decision): Effect.Effect<Response, Refused | PersonUnreachable> =>
                   "refusal" in decision
                     ? Effect.fail(new Refused({ sentence: decision.refusal }))
-                    : Effect.promise(() =>
-                        serve(request, () =>
-                          mcpServer(
-                            { directory: operations, actor: decision.actor, claims, report },
-                            instructions,
+                    : Effect.try({
+                        try: () => personal(decision.allows),
+                        catch: (cause) => new PersonUnreachable({ cause }),
+                      }).pipe(
+                        Effect.flatMap((part) =>
+                          Effect.promise(() =>
+                            serve(request, () =>
+                              mcpServer(
+                                {
+                                  directory: part.directory,
+                                  actor: decision.actor,
+                                  claims,
+                                  report,
+                                },
+                                part.instructions,
+                              ),
+                            ),
                           ),
                         ),
                       ),
