@@ -173,7 +173,7 @@ test("a write's answer over the page size comes back whole, and the write runs o
   });
 
   expect(blocks(written)).toEqual([JSON.stringify(longAnswer(1))]);
-  expect(written.structuredContent).toEqual({ result: longAnswer(1) });
+  expect(written.structuredContent).toBeUndefined();
   expect(ran).toEqual(["catalog.import"]);
 });
 
@@ -246,4 +246,32 @@ test("the kept answers stay within their bound: the oldest goes first, and one p
   pages.keep("huge", "x".repeat(20_000_001));
   expect(pages.get("huge")).toBeUndefined();
   expect(pages.get("third")).toBe(eight);
+});
+
+test("an answer carries its value as structured content only under a quarter of a page, and as text alone above", async () => {
+  // Sent as both, a 39 000-character answer reached the agent as 78 000.
+  const sized = (name: string, length: number) => ({
+    name,
+    area: "sizes",
+    kind: "read" as const,
+    description: `${name}.`,
+    written: true,
+    destructive: false,
+    idempotent: true,
+    input: { schema: { type: "object", properties: {} } },
+    output: undefined,
+    run: async () => ({ value: "x".repeat(length - 2) }),
+  });
+  const quarter = PAGE_SIZE / 4;
+  const directory = toDirectory(
+    catalogue([sized("sizes.under", quarter - 1), sized("sizes.at", quarter)], []),
+  );
+  await using door = await connected(directory, null);
+  const under = await door.client.callTool({ name: "read", arguments: { name: "sizes.under" } });
+  const at = await door.client.callTool({ name: "read", arguments: { name: "sizes.at" } });
+
+  expect(blocks(under).join("").length).toBe(quarter - 1);
+  expect(under.structuredContent).toEqual({ result: "x".repeat(quarter - 3) });
+  expect(blocks(at)).toEqual([JSON.stringify("x".repeat(quarter - 2))]);
+  expect(at.structuredContent).toBeUndefined();
 });

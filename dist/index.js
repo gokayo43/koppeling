@@ -19153,7 +19153,14 @@ function findAnswer(directory, words) {
 		area: operation.area
 	})) });
 }
+/**
+* The longest answer whose value also goes as `structuredContent`: a quarter
+* of a page. A client may pass the model both copies, so a 39 000-character
+* answer sent twice reached it as 78 000; above this, the text alone.
+*/
+const STRUCTURED_BELOW = PAGE_SIZE / 4;
 function result(answered) {
+	const structured = answered.text.length < STRUCTURED_BELOW ? answered.structured : void 0;
 	return {
 		content: [{
 			type: "text",
@@ -19162,7 +19169,7 @@ function result(answered) {
 			type: "text",
 			text: answered.note
 		}]],
-		...answered.structured === void 0 ? {} : { structuredContent: answered.structured },
+		...structured === void 0 ? {} : { structuredContent: structured },
 		...answered.isError ? { isError: true } : {}
 	};
 }

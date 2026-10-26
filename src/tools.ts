@@ -7,7 +7,7 @@ import { copy } from "./copy";
 import type { Directory } from "./directory";
 import { find, FIND_MAX_LENGTH, FIND_MAX_WORDS, stems } from "./find";
 import type { Json, JsonObject, JsonSchema } from "./json";
-import { pageKey, paged, type Produced } from "./pages";
+import { PAGE_SIZE, pageKey, paged, type Produced } from "./pages";
 import { call, unknownOperation, type Session } from "./run";
 import { properties } from "./schema";
 
@@ -138,13 +138,21 @@ function findAnswer(directory: Directory<never>, words: string): Answer {
   });
 }
 
+/**
+ * The longest answer whose value also goes as `structuredContent`: a quarter
+ * of a page. A client may pass the model both copies, so a 39 000-character
+ * answer sent twice reached it as 78 000; above this, the text alone.
+ */
+const STRUCTURED_BELOW = PAGE_SIZE / 4;
+
 function result(answered: Answer): CallToolResult {
+  const structured = answered.text.length < STRUCTURED_BELOW ? answered.structured : undefined;
   return {
     content: [
       { type: "text", text: answered.text },
       ...(answered.note === undefined ? [] : [{ type: "text" as const, text: answered.note }]),
     ],
-    ...(answered.structured === undefined ? {} : { structuredContent: answered.structured }),
+    ...(structured === undefined ? {} : { structuredContent: structured }),
     ...(answered.isError ? { isError: true } : {}),
   };
 }

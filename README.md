@@ -114,8 +114,12 @@ Five tools, always these, in this order:
 | `list`     | `area?`                      | No area: every area with its line and operation count. An exact area: its operations with name, kind and line, a write with its `destructive` and `idempotent`.                                                   |
 | `find`     | `words`                      | Up to ten operations whose name, area, written description and input field names best meet the words (at most 200 characters, 20 distinct words), shown as `list` shows them. Runs nothing.                       |
 | `describe` | `name`, `part?`, `vervolg?`  | The whole operation: kind, `destructive`, `idempotent`, description, side-effect line, input schema, `paging`, output schema (or, past 10 000 characters, its length). `part: "output"`: the output schema whole. |
-| `read`     | `name`, `input?`, `vervolg?` | Runs a read operation once as the person; its value as text and as `structuredContent: { result }`, or in pages when it is long.                                                                                  |
+| `read`     | `name`, `input?`, `vervolg?` | Runs a read operation once as the person; its value as text, and also as `structuredContent: { result }` while it is under 10 000 characters, or in pages when it is long.                                        |
 | `write`    | `name`, `input?`             | Runs a write operation once as the person, the same way, and always whole.                                                                                                                                        |
+
+An answer of 10 000 characters or more, a quarter of a page, comes as text
+alone: a client may pass the model both the text and the structured content,
+so an answer sent as both reached it twice.
 
 `list`, `find`, `describe` and `read` are annotated read-only; `write` is
 destructive, and its description tells the agent that a write changes data,
