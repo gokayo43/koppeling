@@ -2,3 +2,6 @@ node_modules
 coverage
 *.tsbuildinfo
 .DS_Store
+
+# Agent worktrees of the primary checkout.
+.claude/
