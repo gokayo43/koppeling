@@ -1,12 +1,14 @@
 import { Data, Duration, Effect } from "effect";
 import type { JWTPayload } from "jose";
 
+import { refusal, type Answer } from "./answer";
 import type { Kind, Outcome } from "./catalogue";
 import { strayKeys } from "./closed";
 import { copy } from "./copy";
 import { neighbours, type Directory } from "./directory";
 import { writeEvent, type Report, type WriteOutcome } from "./events";
-import type { Json, JsonObject } from "./json";
+import type { Json } from "./json";
+import { pageKey, paged, type Pages, type Produced } from "./pages";
 
 /**
  * How long one operation may take before the door gives up on it. A program
@@ -21,20 +23,9 @@ export interface Session<Actor> {
   readonly actor: Actor;
   readonly claims: JWTPayload;
   readonly report: Report;
+  /** The door's long answers, kept for their next pages. */
+  readonly pages: Pages;
 }
-
-export interface Answer {
-  readonly text: string;
-  readonly structured?: JsonObject;
-  readonly isError?: true;
-}
-
-/** A tool error: the sentence, and beside it as data whatever details came with it. */
-export const refusal = (text: string, details?: Json): Answer => ({
-  text,
-  isError: true,
-  ...(details === undefined ? {} : { structured: { refusal: text, details } }),
-});
 
 /** The refusal for a name no operation has: the names it most likely meant, or the areas. */
 export function unknownOperation(directory: Directory<never>, name: string): Answer {
@@ -48,10 +39,13 @@ export function unknownOperation(directory: Directory<never>, name: string): Ans
 
 interface Settled {
   readonly outcome: WriteOutcome;
-  readonly answered: Answer;
+  readonly produced: Produced;
 }
 
-const settled = (outcome: WriteOutcome, answered: Answer): Settled => ({ outcome, answered });
+const settled = (outcome: WriteOutcome, final: Answer): Settled => ({
+  outcome,
+  produced: { final },
+});
 
 class NotReached extends Data.TaggedError("NotReached")<{ readonly cause: unknown }> {}
 class TimedOut extends Data.TaggedError("TimedOut") {}
@@ -63,12 +57,16 @@ class TimedOut extends Data.TaggedError("TimedOut") {}
  * reported and answered with the door's own sentence, so a database's words
  * never reach the person; for a write that reached the program, that sentence
  * says the change may have been made. Every write leaves one write event.
+ *
+ * A read's answer longer than a page comes in pages, `vervolg` naming the
+ * next (`paged`); a write's comes whole, since a write is never run again.
  */
 export function call<Actor>(
   session: Session<Actor>,
   tool: Kind,
   name: string,
   input: Json | undefined,
+  vervolg?: string,
 ): Effect.Effect<Answer> {
   const operation = session.directory.byName.get(name);
   if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
@@ -94,7 +92,7 @@ export function call<Actor>(
           ),
         ),
       );
-  return Effect.tryPromise({
+  const settle = Effect.tryPromise({
     try: (signal) => operation.run(session.actor, input, signal),
     catch: (cause) => new NotReached({ cause }),
   }).pipe(
@@ -102,9 +100,11 @@ export function call<Actor>(
     Effect.flatMap((outcome: Outcome) => {
       if ("value" in outcome) {
         const value = outcome.value;
-        return Effect.succeed(
-          settled("value", { text: JSON.stringify(value), structured: { result: value } }),
-        );
+        const whole = JSON.stringify(value);
+        return Effect.succeed({
+          outcome: "value" as const,
+          produced: { whole, fitting: { text: whole, structured: { result: value } } },
+        });
       }
       if ("refusal" in outcome) {
         return Effect.succeed(settled("refusal", refusal(outcome.refusal, outcome.details)));
@@ -116,9 +116,17 @@ export function call<Actor>(
       TimedOut: () =>
         Effect.succeed(settled("unknown", refusal(write ? copy.writeTimedOut : copy.readTimedOut))),
     }),
-    Effect.tap(({ outcome }) =>
-      write ? session.report(writeEvent(name, session.claims, outcome)) : Effect.void,
-    ),
-    Effect.map(({ answered }) => answered),
+  );
+  if (write) {
+    return settle.pipe(
+      Effect.tap(({ outcome }) => session.report(writeEvent(name, session.claims, outcome))),
+      Effect.map(({ produced }) => ("final" in produced ? produced.final : produced.fitting)),
+    );
+  }
+  return paged(
+    session.pages,
+    pageKey(String(session.claims.sub), "read", name, input),
+    vervolg,
+    settle.pipe(Effect.map(({ produced }) => produced)),
   );
 }

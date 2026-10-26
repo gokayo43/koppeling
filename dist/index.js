@@ -301,13 +301,14 @@ const copy = {
 		describe: {
 			labels: {
 				title: "Operatie lezen",
-				description: "De volledige operatie: soort, beschrijving, invoerschema en uitvoerschema. Lees een operatie voordat je haar met read of write uitvoert."
+				description: "De volledige operatie: soort, gevolgen, beschrijving, invoerschema, uitvoerschema en de eigen velden waarmee ze in stukken opvraagt (paging). Een lang uitvoerschema staat er niet in maar krijg je met part \"output\". Lees een operatie voordat je haar met read of write uitvoert."
 			},
-			name: "De naam van de operatie, precies zoals list of find haar noemt."
+			name: "De naam van de operatie, precies zoals list of find haar noemt.",
+			part: "Met \"output\": alleen het uitvoerschema, hoe lang ook. Laat weg voor de hele operatie."
 		},
 		read: {
 			title: "Gegevens opvragen",
-			description: "Voert een operatie van soort read uit als de ingelogde persoon, met dezelfde rechten als in het programma zelf. Een read verandert niets. Lees de operatie eerst met describe."
+			description: "Voert een operatie van soort read uit als de ingelogde persoon, met dezelfde rechten als in het programma zelf. Een read verandert niets. Lees de operatie eerst met describe. Een antwoord langer dan 40000 tekens komt in delen: elk deel zegt welk deel het is en met welk vervolg je het volgende opvraagt, en de delen achter elkaar zijn het hele antwoord. Noemt describe velden onder paging, zoals limit of page, vraag dan liever kleinere stukken op met die velden."
 		},
 		write: {
 			title: "Gegevens wijzigen",
@@ -315,7 +316,8 @@ const copy = {
 		},
 		run: {
 			name: "De naam van de operatie, precies zoals list of find haar noemt.",
-			input: "De invoer volgens het invoerschema dat describe geeft. Laat weg als de operatie geen invoer heeft."
+			input: "De invoer volgens het invoerschema dat describe geeft. Laat weg als de operatie geen invoer heeft.",
+			vervolg: "Het vervolg dat het vorige deel van een lang antwoord noemt, met verder precies dezelfde vraag. Laat weg voor het eerste deel."
 		}
 	},
 	outline: (lines) => ["Gebieden van dit programma. Blader met list, zoek met find en lees een operatie met describe. Voer een operatie van soort read uit met read en een van soort write met write. Een write wijzigt gegevens: vraag de persoon eerst.", ...lines].join("\n"),
@@ -326,6 +328,11 @@ const copy = {
 	nothingFound: (words, areas) => `Geen operatie gevonden bij "${words}". Kies een gebied uit deze lijst en vraag met list zijn operaties op: ${quoted(areas)}.`,
 	derivedLine: (action, name, fields) => `${ACTIONS$1[action]}: ${name}.${fields.length ? ` Invoer: ${fields.join(", ")}.` : ""}`,
 	andMore: (count) => `en ${count} meer`,
+	nextPage: (page, pages, vervolg) => `Deel ${page} van ${pages}. Vraag deel ${page + 1} op met precies dezelfde vraag en vervolg "${vervolg}"; de delen achter elkaar, zonder deze regels, zijn het hele antwoord.`,
+	lastPage: (pages) => `Deel ${pages} van ${pages}, het laatste; de delen achter elkaar, zonder deze regels, zijn het hele antwoord.`,
+	answerChanged: "De gegevens zijn veranderd sinds de eerdere delen: begin opnieuw, dit is het eerste deel van het nieuwe antwoord.",
+	badContinuation: "Dit vervolg hoort bij geen antwoord op deze vraag. Stel de vraag opnieuw zonder vervolg.",
+	outputOmitted: (length) => `Het uitvoerschema is ${length} tekens lang en staat hier daarom niet; vraag het op met describe en part "output".`,
 	internalError: "Er is een interne fout opgetreden.",
 	glossaryTerms: (terms) => `Termen: ${terms.join(", ")}.`,
 	glossaryLeftOut: (headings) => `Niet opgenomen, wegens de lengte: ${headings.join(", ")}.`,
@@ -1360,13 +1367,7 @@ function writeEvent(operation, claims, outcome) {
 	};
 }
 //#endregion
-//#region src/run.ts
-/**
-* How long one operation may take before the door gives up on it. A program
-* that streams (an event stream) or hangs would otherwise hold the call, and
-* the agent waiting on it, open without end.
-*/
-const OPERATION_TIME_LIMIT = Duration.seconds(60);
+//#region src/answer.ts
 /** A tool error: the sentence, and beside it as data whatever details came with it. */
 const refusal = (text, details) => ({
 	text,
@@ -1376,14 +1377,162 @@ const refusal = (text, details) => ({
 		details
 	} }
 });
+//#endregion
+//#region src/pages.ts
+/**
+* The most characters one answer carries: Claude Code sets a tool result
+* above about 50 000 characters aside instead of reading it (measured in the
+* API door's probe), and a page leaves room for the line that follows it.
+*/
+const PAGE_SIZE = 4e4;
+/** How long the door keeps a long answer for its next pages. */
+const KEPT_MS = 6e5;
+/**
+* The most characters the door keeps, over every person's long answers
+* together: about 40 MB as JavaScript holds text. An answer longer than this
+* is never kept, so each of its pages runs its read again.
+*/
+const KEPT_CHARACTERS = 2e7;
+/**
+* The long answers of one door, kept so that each page comes from one run of
+* the program. Each is held under a key naming the person, the tool, the
+* operation, its input and the answer's own fingerprint, so one person's
+* continuation never reads another person's answer.
+*/
+var Pages = class {
+	#kept = /* @__PURE__ */ new Map();
+	#characters = 0;
+	get(key) {
+		this.#expire();
+		return this.#kept.get(key)?.text;
+	}
+	keep(key, text) {
+		this.#expire();
+		if (text.length > KEPT_CHARACTERS || this.#kept.has(key)) return;
+		for (const [oldest, { text: held }] of this.#kept) {
+			if (this.#characters + text.length <= KEPT_CHARACTERS) break;
+			this.#kept.delete(oldest);
+			this.#characters -= held.length;
+		}
+		this.#kept.set(key, {
+			text,
+			until: Date.now() + KEPT_MS
+		});
+		this.#characters += text.length;
+	}
+	#expire() {
+		const now = Date.now();
+		for (const [key, { text, until }] of this.#kept) {
+			if (until > now) break;
+			this.#kept.delete(key);
+			this.#characters -= text.length;
+		}
+	}
+};
+/** The key of one call's long answer: the person, the tool, the operation and its arguments. */
+function pageKey(sub, tool, name, args) {
+	return JSON.stringify([
+		sub,
+		tool,
+		name,
+		canonical(args)
+	]);
+}
+/**
+* One call's answer, paged: without `vervolg` the first page of what
+* `produce` makes, with it the page it names, from the answer the door kept,
+* or, once the door no longer keeps it, from a new run, whose answer must be
+* the same text: where the data changed in between, the door says so and
+* answers the new answer's first page, since pages of two answers put
+* together would be neither.
+*/
+function paged(pages, key, vervolg, produce) {
+	if (vervolg === void 0) return Effect.flatMap(produce, (made) => firstOf(pages, key, made, false));
+	const [, print, number] = /^([A-Za-z0-9_-]{22})\.([1-9]\d{0,5})$/.exec(vervolg) ?? [];
+	if (print === void 0 || number === void 0) return Effect.succeed(refusal(copy.badContinuation));
+	const page = Number(number);
+	const held = pages.get(`${key}${print}`);
+	if (held !== void 0) return Effect.succeed(pageOf(held, print, page));
+	return Effect.gen(function* () {
+		const made = yield* produce;
+		if ("final" in made) return made.final;
+		if ((yield* fingerprint(made.whole)) !== print) return yield* firstOf(pages, key, made, true);
+		pages.keep(`${key}${print}`, made.whole);
+		return pageOf(made.whole, print, page);
+	});
+}
+function firstOf(pages, key, made, changed) {
+	if ("final" in made) return Effect.succeed(made.final);
+	if (made.whole.length <= 4e4 && !changed) return Effect.succeed(made.fitting);
+	return Effect.map(fingerprint(made.whole), (print) => {
+		pages.keep(`${key}${print}`, made.whole);
+		const first = pageOf(made.whole, print, 1);
+		return changed ? {
+			...first,
+			note: `${copy.answerChanged} ${first.note ?? ""}`
+		} : first;
+	});
+}
+/** Page `page` of `whole`, with the line that says which it is and how to ask for the next. */
+function pageOf(whole, print, page) {
+	const starts = pageStarts(whole);
+	const start = starts[page - 1];
+	if (start === void 0) return refusal(copy.badContinuation);
+	return {
+		text: whole.slice(start, starts[page] ?? whole.length),
+		note: page === starts.length ? copy.lastPage(starts.length) : copy.nextPage(page, starts.length, `${print}.${page + 1}`)
+	};
+}
+/**
+* Where each page of `whole` starts: every {@link PAGE_SIZE} characters, or
+* one earlier where that would split a character outside the Basic
+* Multilingual Plane in two (its two UTF-16 halves on two pages).
+*/
+function pageStarts(whole) {
+	const starts = [0];
+	let at = 0;
+	while (at + PAGE_SIZE < whole.length) {
+		let end = at + PAGE_SIZE;
+		const before = whole.charCodeAt(end - 1);
+		if (before >= 55296 && before <= 56319) end -= 1;
+		starts.push(end);
+		at = end;
+	}
+	return starts;
+}
+/**
+* A short fingerprint of an answer's text, to tell whether a new run answered
+* the same: 22 base64url characters (132 bits) of its SHA-256, through Web
+* Crypto, since the bundle imports no runtime built-in.
+*/
+function fingerprint(text) {
+	return Effect.promise(async () => {
+		const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+		return btoa(String.fromCharCode(...digest)).replaceAll("+", "-").replaceAll("/", "_").slice(0, 22);
+	});
+}
+/** JSON with every object's keys in order, so the same input always makes the same key. */
+function canonical(value) {
+	if (value === void 0 || value === null || typeof value !== "object") return value ?? null;
+	if (isJsonArray(value)) return value.map((item) => canonical(item));
+	return Object.fromEntries(Object.keys(value).toSorted().map((key) => [key, canonical(value[key])]));
+}
+//#endregion
+//#region src/run.ts
+/**
+* How long one operation may take before the door gives up on it. A program
+* that streams (an event stream) or hangs would otherwise hold the call, and
+* the agent waiting on it, open without end.
+*/
+const OPERATION_TIME_LIMIT = Duration.seconds(60);
 /** The refusal for a name no operation has: the names it most likely meant, or the areas. */
 function unknownOperation(directory, name) {
 	const near = neighbours(directory, name);
 	return refusal(near.length > 0 ? copy.unknownOperation(name, near) : copy.unknownOperationArea(name, [...directory.areas.keys()]));
 }
-const settled = (outcome, answered) => ({
+const settled = (outcome, final) => ({
 	outcome,
-	answered
+	produced: { final }
 });
 var NotReached = class extends Data.TaggedError("NotReached") {};
 var TimedOut = class extends Data.TaggedError("TimedOut") {};
@@ -1394,8 +1543,11 @@ var TimedOut = class extends Data.TaggedError("TimedOut") {};
 * reported and answered with the door's own sentence, so a database's words
 * never reach the person; for a write that reached the program, that sentence
 * says the change may have been made. Every write leaves one write event.
+*
+* A read's answer longer than a page comes in pages, `vervolg` naming the
+* next (`paged`); a write's comes whole, since a write is never run again.
 */
-function call(session, tool, name, input) {
+function call(session, tool, name, input, vervolg) {
 	const operation = session.directory.byName.get(name);
 	if (operation === void 0) return Effect.succeed(unknownOperation(session.directory, name));
 	if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
@@ -1411,7 +1563,7 @@ function call(session, tool, name, input) {
 		operation: name,
 		cause
 	}).pipe(Effect.as(settled(reached ? "unknown" : "failure", refusal(write && reached ? copy.writeUncertain : copy.internalError))));
-	return Effect.tryPromise({
+	const settle = Effect.tryPromise({
 		try: (signal) => operation.run(session.actor, input, signal),
 		catch: (cause) => new NotReached({ cause })
 	}).pipe(Effect.timeoutFail({
@@ -1420,17 +1572,26 @@ function call(session, tool, name, input) {
 	}), Effect.flatMap((outcome) => {
 		if ("value" in outcome) {
 			const value = outcome.value;
-			return Effect.succeed(settled("value", {
-				text: JSON.stringify(value),
-				structured: { result: value }
-			}));
+			const whole = JSON.stringify(value);
+			return Effect.succeed({
+				outcome: "value",
+				produced: {
+					whole,
+					fitting: {
+						text: whole,
+						structured: { result: value }
+					}
+				}
+			});
 		}
 		if ("refusal" in outcome) return Effect.succeed(settled("refusal", refusal(outcome.refusal, outcome.details)));
 		return failed(outcome.failed, true);
 	}), Effect.catchTags({
 		NotReached: ({ cause }) => failed(cause, false),
 		TimedOut: () => Effect.succeed(settled("unknown", refusal(write ? copy.writeTimedOut : copy.readTimedOut)))
-	}), Effect.tap(({ outcome }) => write ? session.report(writeEvent(name, session.claims, outcome)) : Effect.void), Effect.map(({ answered }) => answered));
+	}));
+	if (write) return settle.pipe(Effect.tap(({ outcome }) => session.report(writeEvent(name, session.claims, outcome))), Effect.map(({ produced }) => "final" in produced ? produced.final : produced.fitting));
+	return paged(session.pages, pageKey(String(session.claims.sub), "read", name, input), vervolg, settle.pipe(Effect.map(({ produced }) => produced)));
 }
 //#endregion
 //#region src/tools.ts
@@ -1469,10 +1630,46 @@ function list(directory, area) {
 }
 /** A description's line that starts with `Gevolg:` states what the operation changes. */
 const SIDE_EFFECT = /^Gevolg:\s*(.+)$/m;
-function describe(directory, name) {
-	const operation = directory.byName.get(name);
-	if (operation === void 0) return unknownOperation(directory, name);
-	return answer({
+/**
+* The longest output schema `describe` carries in the whole operation; a
+* longer one is named by its length and answered on its own with `part:
+* "output"`. The probe saw a describe of 203 000 characters, nearly all of it
+* an inlined output schema.
+*/
+const OUTPUT_BOUND = 1e4;
+/** The names a program's own paging fields go by. */
+const PAGING = /* @__PURE__ */ new Set([
+	"limit",
+	"offset",
+	"page",
+	"pageSize",
+	"page_size",
+	"perPage",
+	"per_page",
+	"cursor",
+	"take",
+	"skip"
+]);
+/** The input's own paging fields, by path: `limit`, or `query.page` one level down. */
+function pagingFields(input) {
+	const fields = properties(input).flatMap(([name, child]) => [...PAGING.has(name) ? [name] : [], ...properties(child).flatMap(([inner]) => PAGING.has(inner) ? [`${name}.${inner}`] : [])]);
+	return [...new Set(fields)];
+}
+function described(operation, part) {
+	const output = operation.output ?? null;
+	if (part === "output") {
+		const whole = JSON.stringify(output);
+		return {
+			whole,
+			fitting: {
+				text: whole,
+				structured: { output }
+			}
+		};
+	}
+	const outputText = JSON.stringify(output);
+	const long = outputText.length > OUTPUT_BOUND;
+	const structured = {
 		name: operation.name,
 		area: operation.area,
 		kind: operation.kind,
@@ -1481,8 +1678,19 @@ function describe(directory, name) {
 		description: operation.description,
 		sideEffect: operation.description.match(SIDE_EFFECT)?.[1] ?? null,
 		input: operation.input,
-		output: operation.output ?? null
-	});
+		paging: pagingFields(operation.input),
+		output: long ? null : output,
+		...long ? { outputOmitted: copy.outputOmitted(outputText.length) } : {}
+	};
+	return {
+		whole: JSON.stringify(structured),
+		fitting: answer(structured)
+	};
+}
+function describe(session, name, part, vervolg) {
+	const operation = session.directory.byName.get(name);
+	if (operation === void 0) return Effect.succeed(unknownOperation(session.directory, name));
+	return paged(session.pages, pageKey(String(session.claims.sub), "describe", name, part ?? null), vervolg, Effect.sync(() => described(operation, part)));
 }
 function findAnswer(directory, words) {
 	if (new Set(stems(words)).size > 20) return refusal(copy.tooManyWords(20));
@@ -1501,7 +1709,10 @@ function result(answered) {
 		content: [{
 			type: "text",
 			text: answered.text
-		}],
+		}, ...answered.note === void 0 ? [] : [{
+			type: "text",
+			text: answered.note
+		}]],
 		...answered.structured === void 0 ? {} : { structuredContent: answered.structured },
 		...answered.isError ? { isError: true } : {}
 	};
@@ -1532,11 +1743,29 @@ const SCHEMAS = {
 	}),
 	describe: fromJsonSchema({
 		type: "object",
-		properties: { name: text(copy.tools.describe.name) },
+		properties: {
+			name: text(copy.tools.describe.name),
+			part: {
+				type: "string",
+				enum: ["output"],
+				description: copy.tools.describe.part
+			},
+			vervolg: text(copy.tools.run.vervolg)
+		},
 		required: ["name"],
 		additionalProperties: false
 	}),
-	run: fromJsonSchema({
+	read: fromJsonSchema({
+		type: "object",
+		properties: {
+			name: text(copy.tools.run.name),
+			input: { description: copy.tools.run.input },
+			vervolg: text(copy.tools.run.vervolg)
+		},
+		required: ["name"],
+		additionalProperties: false
+	}),
+	write: fromJsonSchema({
 		type: "object",
 		properties: {
 			name: text(copy.tools.run.name),
@@ -1567,15 +1796,15 @@ function registered(instructions, handlers) {
 		...tools.describe.labels,
 		inputSchema: SCHEMAS.describe,
 		annotations: { readOnlyHint: true }
-	}, ({ name }) => result(handlers.describe(name)));
+	}, async ({ name, part, vervolg }) => result(await handlers.describe(name, part, vervolg)));
 	server.registerTool("read", {
 		...tools.read,
-		inputSchema: SCHEMAS.run,
+		inputSchema: SCHEMAS.read,
 		annotations: { readOnlyHint: true }
-	}, async ({ name, input }) => result(await handlers.read(name, input)));
+	}, async ({ name, input, vervolg }) => result(await handlers.read(name, input, vervolg)));
 	server.registerTool("write", {
 		...tools.write,
-		inputSchema: SCHEMAS.run,
+		inputSchema: SCHEMAS.write,
 		annotations: {
 			readOnlyHint: false,
 			destructiveHint: true
@@ -1589,8 +1818,8 @@ function mcpServer(session, instructions) {
 	return registered(instructions, {
 		list: (area) => list(directory, area),
 		find: (words) => findAnswer(directory, words),
-		describe: (name) => describe(directory, name),
-		read: (name, input) => Effect.runPromise(call(session, "read", name, input)),
+		describe: (name, part, vervolg) => Effect.runPromise(describe(session, name, part, vervolg)),
+		read: (name, input, vervolg) => Effect.runPromise(call(session, "read", name, input, vervolg)),
 		write: (name, input) => Effect.runPromise(call(session, "write", name, input))
 	});
 }
@@ -1604,7 +1833,7 @@ function refusalServer(sentence) {
 	return registered(sentence, {
 		list: refused,
 		find: refused,
-		describe: refused,
+		describe: async () => refused(),
 		read: async () => refused(),
 		write: async () => refused()
 	});
@@ -1667,6 +1896,7 @@ function koppeling(options) {
 	const metadataUrl = getOAuthProtectedResourceMetadataUrl(new URL(options.resource.url));
 	const verify = bearerVerifier(options.identity, options.resource.url);
 	const report = reporter(options.log);
+	const pages = new Pages();
 	const document = {
 		resource: options.resource.url,
 		authorization_servers: [options.identity.authorizationServer],
@@ -1702,7 +1932,8 @@ function koppeling(options) {
 		directory: part.directory,
 		actor: decision.actor,
 		claims,
-		report
+		report,
+		pages
 	}, part.instructions)))))))), Effect.catchTags({
 		Unauthenticated: ({ sentence, tokenGiven }) => Effect.succeed(refusalResponse(401, sentence, { "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}"${tokenGiven ? ", error=\"invalid_token\"" : ""}` })),
 		Refused: ({ sentence }) => Effect.promise(async () => await isJsonRpc(request) ? serve(request, () => refusalServer(sentence)) : refusalResponse(403, sentence)),

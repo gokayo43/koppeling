@@ -1,12 +1,15 @@
 import { fromJsonSchema, McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { Effect } from "effect";
 
+import { refusal, type Answer } from "./answer";
 import type { Operation } from "./catalogue";
 import { copy } from "./copy";
 import type { Directory } from "./directory";
 import { find, FIND_MAX_LENGTH, FIND_MAX_WORDS, stems } from "./find";
-import type { Json, JsonObject } from "./json";
-import { call, refusal, unknownOperation, type Answer, type Session } from "./run";
+import type { Json, JsonObject, JsonSchema } from "./json";
+import { pageKey, paged, type Produced } from "./pages";
+import { call, unknownOperation, type Session } from "./run";
+import { properties } from "./schema";
 
 const answer = (structured: JsonObject): Answer => ({
   text: JSON.stringify(structured),
@@ -48,10 +51,46 @@ function list(directory: Directory<never>, area: string | undefined): Answer {
 /** A description's line that starts with `Gevolg:` states what the operation changes. */
 const SIDE_EFFECT = /^Gevolg:\s*(.+)$/m;
 
-function describe(directory: Directory<never>, name: string): Answer {
-  const operation = directory.byName.get(name);
-  if (operation === undefined) return unknownOperation(directory, name);
-  return answer({
+/**
+ * The longest output schema `describe` carries in the whole operation; a
+ * longer one is named by its length and answered on its own with `part:
+ * "output"`. The probe saw a describe of 203 000 characters, nearly all of it
+ * an inlined output schema.
+ */
+const OUTPUT_BOUND = 10_000;
+
+/** The names a program's own paging fields go by. */
+const PAGING = new Set([
+  "limit",
+  "offset",
+  "page",
+  "pageSize",
+  "page_size",
+  "perPage",
+  "per_page",
+  "cursor",
+  "take",
+  "skip",
+]);
+
+/** The input's own paging fields, by path: `limit`, or `query.page` one level down. */
+function pagingFields(input: JsonSchema): string[] {
+  const fields = properties(input).flatMap(([name, child]) => [
+    ...(PAGING.has(name) ? [name] : []),
+    ...properties(child).flatMap(([inner]) => (PAGING.has(inner) ? [`${name}.${inner}`] : [])),
+  ]);
+  return [...new Set(fields)];
+}
+
+function described(operation: Operation<never>, part: "output" | undefined): Produced {
+  const output = operation.output ?? null;
+  if (part === "output") {
+    const whole = JSON.stringify(output);
+    return { whole, fitting: { text: whole, structured: { output } } };
+  }
+  const outputText = JSON.stringify(output);
+  const long = outputText.length > OUTPUT_BOUND;
+  const structured: JsonObject = {
     name: operation.name,
     area: operation.area,
     kind: operation.kind,
@@ -60,8 +99,27 @@ function describe(directory: Directory<never>, name: string): Answer {
     description: operation.description,
     sideEffect: operation.description.match(SIDE_EFFECT)?.[1] ?? null,
     input: operation.input,
-    output: operation.output ?? null,
-  });
+    paging: pagingFields(operation.input),
+    output: long ? null : output,
+    ...(long ? { outputOmitted: copy.outputOmitted(outputText.length) } : {}),
+  };
+  return { whole: JSON.stringify(structured), fitting: answer(structured) };
+}
+
+function describe<Actor>(
+  session: Session<Actor>,
+  name: string,
+  part: "output" | undefined,
+  vervolg: string | undefined,
+): Effect.Effect<Answer> {
+  const operation = session.directory.byName.get(name);
+  if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
+  return paged(
+    session.pages,
+    pageKey(String(session.claims.sub), "describe", name, part ?? null),
+    vervolg,
+    Effect.sync(() => described(operation, part)),
+  );
 }
 
 function findAnswer(directory: Directory<never>, words: string): Answer {
@@ -82,7 +140,10 @@ function findAnswer(directory: Directory<never>, words: string): Answer {
 
 function result(answered: Answer): CallToolResult {
   return {
-    content: [{ type: "text", text: answered.text }],
+    content: [
+      { type: "text", text: answered.text },
+      ...(answered.note === undefined ? [] : [{ type: "text" as const, text: answered.note }]),
+    ],
     ...(answered.structured === undefined ? {} : { structuredContent: answered.structured }),
     ...(answered.isError ? { isError: true } : {}),
   };
@@ -107,13 +168,27 @@ const SCHEMAS = {
     required: ["words"],
     additionalProperties: false,
   }),
-  describe: fromJsonSchema<{ name: string }>({
+  describe: fromJsonSchema<{ name: string; part?: "output"; vervolg?: string }>({
     type: "object",
-    properties: { name: text(copy.tools.describe.name) },
+    properties: {
+      name: text(copy.tools.describe.name),
+      part: { type: "string", enum: ["output"], description: copy.tools.describe.part },
+      vervolg: text(copy.tools.run.vervolg),
+    },
     required: ["name"],
     additionalProperties: false,
   }),
-  run: fromJsonSchema<{ name: string; input?: Json }>({
+  read: fromJsonSchema<{ name: string; input?: Json; vervolg?: string }>({
+    type: "object",
+    properties: {
+      name: text(copy.tools.run.name),
+      input: { description: copy.tools.run.input },
+      vervolg: text(copy.tools.run.vervolg),
+    },
+    required: ["name"],
+    additionalProperties: false,
+  }),
+  write: fromJsonSchema<{ name: string; input?: Json }>({
     type: "object",
     properties: { name: text(copy.tools.run.name), input: { description: copy.tools.run.input } },
     required: ["name"],
@@ -124,8 +199,16 @@ const SCHEMAS = {
 interface Handlers {
   readonly list: (area: string | undefined) => Answer;
   readonly find: (words: string) => Answer;
-  readonly describe: (name: string) => Answer;
-  readonly read: (name: string, input: Json | undefined) => Promise<Answer>;
+  readonly describe: (
+    name: string,
+    part: "output" | undefined,
+    vervolg: string | undefined,
+  ) => Promise<Answer>;
+  readonly read: (
+    name: string,
+    input: Json | undefined,
+    vervolg: string | undefined,
+  ) => Promise<Answer>;
   readonly write: (name: string, input: Json | undefined) => Promise<Answer>;
 }
 
@@ -150,18 +233,18 @@ function registered(instructions: string, handlers: Handlers): McpServer {
       inputSchema: SCHEMAS.describe,
       annotations: { readOnlyHint: true },
     },
-    ({ name }) => result(handlers.describe(name)),
+    async ({ name, part, vervolg }) => result(await handlers.describe(name, part, vervolg)),
   );
   server.registerTool(
     "read",
-    { ...tools.read, inputSchema: SCHEMAS.run, annotations: { readOnlyHint: true } },
-    async ({ name, input }) => result(await handlers.read(name, input)),
+    { ...tools.read, inputSchema: SCHEMAS.read, annotations: { readOnlyHint: true } },
+    async ({ name, input, vervolg }) => result(await handlers.read(name, input, vervolg)),
   );
   server.registerTool(
     "write",
     {
       ...tools.write,
-      inputSchema: SCHEMAS.run,
+      inputSchema: SCHEMAS.write,
       annotations: { readOnlyHint: false, destructiveHint: true },
     },
     async ({ name, input }) => result(await handlers.write(name, input)),
@@ -175,8 +258,8 @@ export function mcpServer<Actor>(session: Session<Actor>, instructions: string):
   return registered(instructions, {
     list: (area) => list(directory, area),
     find: (words) => findAnswer(directory, words),
-    describe: (name) => describe(directory, name),
-    read: (name, input) => Effect.runPromise(call(session, "read", name, input)),
+    describe: (name, part, vervolg) => Effect.runPromise(describe(session, name, part, vervolg)),
+    read: (name, input, vervolg) => Effect.runPromise(call(session, "read", name, input, vervolg)),
     write: (name, input) => Effect.runPromise(call(session, "write", name, input)),
   });
 }
@@ -191,7 +274,7 @@ export function refusalServer(sentence: string): McpServer {
   return registered(sentence, {
     list: refused,
     find: refused,
-    describe: refused,
+    describe: async () => refused(),
     read: async () => refused(),
     write: async () => refused(),
   });

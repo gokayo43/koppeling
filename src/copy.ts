@@ -38,14 +38,15 @@ export const copy = {
       labels: {
         title: "Operatie lezen",
         description:
-          "De volledige operatie: soort, beschrijving, invoerschema en uitvoerschema. Lees een operatie voordat je haar met read of write uitvoert.",
+          'De volledige operatie: soort, gevolgen, beschrijving, invoerschema, uitvoerschema en de eigen velden waarmee ze in stukken opvraagt (paging). Een lang uitvoerschema staat er niet in maar krijg je met part "output". Lees een operatie voordat je haar met read of write uitvoert.',
       },
       name: "De naam van de operatie, precies zoals list of find haar noemt.",
+      part: 'Met "output": alleen het uitvoerschema, hoe lang ook. Laat weg voor de hele operatie.',
     },
     read: {
       title: "Gegevens opvragen",
       description:
-        "Voert een operatie van soort read uit als de ingelogde persoon, met dezelfde rechten als in het programma zelf. Een read verandert niets. Lees de operatie eerst met describe.",
+        "Voert een operatie van soort read uit als de ingelogde persoon, met dezelfde rechten als in het programma zelf. Een read verandert niets. Lees de operatie eerst met describe. Een antwoord langer dan 40000 tekens komt in delen: elk deel zegt welk deel het is en met welk vervolg je het volgende opvraagt, en de delen achter elkaar zijn het hele antwoord. Noemt describe velden onder paging, zoals limit of page, vraag dan liever kleinere stukken op met die velden.",
     },
     write: {
       title: "Gegevens wijzigen",
@@ -56,6 +57,8 @@ export const copy = {
       name: "De naam van de operatie, precies zoals list of find haar noemt.",
       input:
         "De invoer volgens het invoerschema dat describe geeft. Laat weg als de operatie geen invoer heeft.",
+      vervolg:
+        "Het vervolg dat het vorige deel van een lang antwoord noemt, met verder precies dezelfde vraag. Laat weg voor het eerste deel.",
     },
   },
   outline: (lines: readonly string[]) =>
@@ -79,6 +82,16 @@ export const copy = {
     fields: readonly string[],
   ) => `${ACTIONS[action]}: ${name}.${fields.length ? ` Invoer: ${fields.join(", ")}.` : ""}`,
   andMore: (count: number) => `en ${count} meer`,
+  nextPage: (page: number, pages: number, vervolg: string) =>
+    `Deel ${page} van ${pages}. Vraag deel ${page + 1} op met precies dezelfde vraag en vervolg "${vervolg}"; de delen achter elkaar, zonder deze regels, zijn het hele antwoord.`,
+  lastPage: (pages: number) =>
+    `Deel ${pages} van ${pages}, het laatste; de delen achter elkaar, zonder deze regels, zijn het hele antwoord.`,
+  answerChanged:
+    "De gegevens zijn veranderd sinds de eerdere delen: begin opnieuw, dit is het eerste deel van het nieuwe antwoord.",
+  badContinuation:
+    "Dit vervolg hoort bij geen antwoord op deze vraag. Stel de vraag opnieuw zonder vervolg.",
+  outputOmitted: (length: number) =>
+    `Het uitvoerschema is ${length} tekens lang en staat hier daarom niet; vraag het op met describe en part "output".`,
   internalError: "Er is een interne fout opgetreden.",
   glossaryTerms: (terms: readonly string[]) => `Termen: ${terms.join(", ")}.`,
   glossaryLeftOut: (headings: readonly string[]) =>

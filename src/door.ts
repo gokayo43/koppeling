@@ -13,6 +13,7 @@ import type { Catalogue, Note, Operation } from "./catalogue";
 import { copy } from "./copy";
 import { admitted, instructionsFor, toDirectory } from "./directory";
 import { reporter, type KoppelingEvent } from "./events";
+import { Pages } from "./pages";
 import { mcpServer, refusalServer } from "./tools";
 
 /**
@@ -131,6 +132,7 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
   const metadataUrl = getOAuthProtectedResourceMetadataUrl(new URL(options.resource.url));
   const verify = bearerVerifier(options.identity, options.resource.url);
   const report = reporter(options.log);
+  const pages = new Pages();
   const document = {
     resource: options.resource.url,
     authorization_servers: [options.identity.authorizationServer],
@@ -175,6 +177,7 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
                                   actor: decision.actor,
                                   claims,
                                   report,
+                                  pages,
                                 },
                                 part.instructions,
                               ),

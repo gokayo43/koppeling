@@ -15,6 +15,7 @@ import { z } from "zod";
 
 import { instructionsFor, type Directory } from "../src/directory";
 import { reporter } from "../src/events";
+import { Pages } from "../src/pages";
 import { mcpServer } from "../src/tools";
 import {
   apiCaller,
@@ -25,7 +26,13 @@ import {
 import { glossary } from "../tests/fixtures/warehouse";
 
 async function connect<Actor>(directory: Directory<Actor>, words: string, actor: Actor) {
-  const session = { directory, actor, claims: walker, report: reporter(undefined) };
+  const session = {
+    directory,
+    actor,
+    claims: walker,
+    report: reporter(undefined),
+    pages: new Pages(),
+  };
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await mcpServer(session, instructionsFor(words, directory)).connect(serverSide);
   const client = new Client({ name: "walk", version: "1" });
