@@ -670,12 +670,28 @@ async function request(app, target, input, signal) {
 	try {
 		const text = await bodyOf(response, signal);
 		if (response.status >= 500) return { failed: /* @__PURE__ */ new Error(`HTTP ${response.status}: ${text}`) };
-		if (!response.ok) return { refusal: `HTTP ${response.status}: ${text}` };
+		const json = response.headers.get("content-type")?.includes("json") === true;
+		if (!response.ok) {
+			const refusal = `HTTP ${response.status}: ${text}`;
+			const details = json ? parsedOrNothing(text) : void 0;
+			return details === void 0 ? { refusal } : {
+				refusal,
+				details
+			};
+		}
 		if (text === "") return { value: null };
-		if (!response.headers.get("content-type")?.includes("json")) return { value: text };
+		if (!json) return { value: text };
 		return { value: toJson(JSON.parse(text)) };
 	} catch (cause) {
 		return { failed: cause };
+	}
+}
+/** A refusal's JSON body as data, or nothing when it does not parse: its text still goes back. */
+function parsedOrNothing(text) {
+	try {
+		return toJson(JSON.parse(text));
+	} catch {
+		return;
 	}
 }
 /** A response's body, read until `signal` aborts, which cancels a stream that never ends. */
@@ -774,7 +790,12 @@ function fromTrpcRouter(router, options) {
 		try {
 			return { value: toJson(await target(input)) };
 		} catch (error) {
-			return isRefusal(error) ? { refusal: error.message } : { failed: error };
+			if (!isRefusal(error)) return { failed: error };
+			const details = detailsOf(error.cause);
+			return details === void 0 ? { refusal: error.message } : {
+				refusal: error.message,
+				details
+			};
 		}
 	};
 	const declared = [];
@@ -843,6 +864,20 @@ function procedureDefinitions(router) {
 */
 function isRefusal(error) {
 	return error instanceof Error && error.name === "TRPCError" && hasKey(error, "code") && error.code !== "INTERNAL_SERVER_ERROR";
+}
+/**
+* The structured details of a refusal's cause: the input's issues when its
+* parser refused it, or the data the program gave as the cause, which tRPC
+* wraps in its `UnknownCauseError` (CLAUDE.md, Gotchas). A cause that is an
+* error of its own, a database's among them, gives none: its fields are the
+* failing system's, not the program's answer.
+*/
+function detailsOf(cause) {
+	if (hasKey(cause, "issues") && Array.isArray(cause.issues)) return { issues: toJson(cause.issues) };
+	if (cause instanceof Error && cause.constructor.name === "UnknownCauseError") {
+		const details = toJson(cause);
+		return isJsonObject(details) && Object.keys(details).length > 0 ? details : void 0;
+	}
 }
 /** The narrowing every read of a tRPC internal goes through. */
 function hasKey(value, key) {
@@ -1191,7 +1226,7 @@ function call(session, tool, name, input) {
 				structured: { result: value }
 			}));
 		}
-		if ("refusal" in outcome) return Effect.succeed(settled("refusal", refusal(outcome.refusal)));
+		if ("refusal" in outcome) return Effect.succeed(settled("refusal", refusal(outcome.refusal, outcome.details)));
 		return failed(outcome.failed, true);
 	}), Effect.catchTags({
 		NotReached: ({ cause }) => failed(cause, false),

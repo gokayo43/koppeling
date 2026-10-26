@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { check } from "@gokayo43/dev-config/property";
-import { initTRPC, lazy, type AnyTRPCRouter } from "@trpc/server";
+import { initTRPC, lazy, TRPCError, type AnyTRPCRouter } from "@trpc/server";
 import { Schema } from "effect";
 import {
   constantFrom,
@@ -13,7 +13,7 @@ import {
 } from "fast-check";
 import { z } from "zod";
 
-import { fromTrpcRouter } from "../src/index";
+import { fromTrpcRouter, type Json } from "../src/index";
 import { contextFor, warehouseRouter } from "./fixtures/warehouse";
 
 /** A signal no case aborts, for a run the case lets finish. */
@@ -222,4 +222,40 @@ test("the router's own middleware chain runs for a call, with the context contex
 
   expect(await whoami?.run({ id: 7 }, undefined, unaborted)).toEqual({ value: { person: 7 } });
   expect(seen).toEqual([{ person: 7 }]);
+});
+
+test("a refusal's structured details come back as data: the program's own cause, and the input's issues", async () => {
+  // The likeliest wrong carries any cause along, so a database error wrapped
+  // in a refusal would hand the agent its table and constraint names.
+  const databaseError = Object.assign(new Error("duplicate key"), {
+    table: "carriers",
+    constraint: "carriers_pkey",
+  });
+  const router = t.router({
+    carrier: t.procedure.input(z.object({ name: z.string() })).mutation(({ input }) => {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `Onbekende vervoerder "${input.name}"`,
+        cause: { options: ["dhl", "postnl"] },
+      });
+    }),
+    duplicate: t.procedure.mutation(() => {
+      throw new TRPCError({ code: "CONFLICT", message: "Bestaat al", cause: databaseError });
+    }),
+  });
+  const operations = fromTrpcRouter(router, { contextFor: () => ({}) }).operations;
+  const run = (name: string, input: Json | undefined) => {
+    const found = operations.find((operation) => operation.name === name);
+    if (found === undefined) throw new Error(`no ${name}`);
+    return found.run(null, input, unaborted);
+  };
+
+  expect(await run("carrier", { name: "ups" })).toEqual({
+    refusal: 'Onbekende vervoerder "ups"',
+    details: { options: ["dhl", "postnl"] },
+  });
+  expect(await run("carrier", { name: 7 })).toMatchObject({
+    details: { issues: [{ path: ["name"] }] },
+  });
+  expect(await run("duplicate", undefined)).toEqual({ refusal: "Bestaat al" });
 });

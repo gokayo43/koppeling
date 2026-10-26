@@ -28,8 +28,11 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
   areas, names, each operation's name without its area, the search index and
   the instructions outline.
 - `src/find.ts`: the search index and the ranking behind `find`.
-- `src/run.ts`: one `read` or `write`: the time limit, the outcomes and the
-  write events.
+- `src/closed.ts`: closed inputs: the input schema with every object that
+  names its keys closed, and the keys a call's input carries that it does not
+  name.
+- `src/run.ts`: one `read` or `write`: the stray-key refusal, the time limit,
+  the outcomes and the write events.
 - `src/tools.ts`: the five tools, their schemas built once, and the MCP server
   for one request (or for a refused person).
 - `src/events.ts`: what the door tells the host's logger, and Effect's logger
@@ -59,6 +62,9 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   them the same way, and `src/adapters/trpc.ts` checks their shape and fails the
   boot when a release moves them. Re-run the suite on every tRPC bump. A router
   with lazy sub-routers fails the boot: their procedures exist only once loaded.
+  A refusal's details come from its cause the same way: tRPC wraps a cause that
+  is plain data in its own `UnknownCauseError`, recognised by that class name,
+  and the parser's issues sit on the cause's `issues`.
 - **Never read Elysia's `app.models`**: in 1.4.30 that getter compiles a
   validator for every model on each read. The nfp-elysia mount measured 7.4 to
   8.8 s per read against its 984 named-model references, about two hours of

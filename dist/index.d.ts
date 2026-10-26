@@ -15,7 +15,8 @@ type JsonSchema = JsonObject;
 /** `read` changes nothing; `write` changes data, so the person is asked first. */
 type Kind = "read" | "write";
 /**
- * What a program answered: its value, its own refusal sentence, or a failure
+ * What a program answered: its value, its own refusal sentence with whatever
+ * structured details it gave (a list of the values it accepts), or a failure
  * after the program was reached, when whatever it was asked to change may have
  * changed.
  */
@@ -23,6 +24,7 @@ type Outcome = {
   readonly value: Json;
 } | {
   readonly refusal: string;
+  readonly details?: Json;
 } | {
   readonly failed: unknown;
 };

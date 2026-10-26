@@ -9,7 +9,7 @@ import {
   type Note,
   type Outcome,
 } from "../catalogue";
-import { toJson, type Json } from "../json";
+import { isJsonObject, toJson, type Json } from "../json";
 import { allOf, describeSchema, type Described } from "../schema";
 
 export interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
@@ -63,7 +63,11 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       const answer: unknown = await target(input);
       return { value: toJson(answer) };
     } catch (error) {
-      return isRefusal(error) ? { refusal: error.message } : { failed: error };
+      if (!isRefusal(error)) return { failed: error };
+      const details = detailsOf(error.cause);
+      return details === undefined
+        ? { refusal: error.message }
+        : { refusal: error.message, details };
     }
   };
   const declared: Declared<Actor>[] = [];
@@ -164,6 +168,23 @@ function isRefusal(error: unknown): error is Error {
     hasKey(error, "code") &&
     error.code !== "INTERNAL_SERVER_ERROR"
   );
+}
+
+/**
+ * The structured details of a refusal's cause: the input's issues when its
+ * parser refused it, or the data the program gave as the cause, which tRPC
+ * wraps in its `UnknownCauseError` (CLAUDE.md, Gotchas). A cause that is an
+ * error of its own, a database's among them, gives none: its fields are the
+ * failing system's, not the program's answer.
+ */
+function detailsOf(cause: unknown): Json | undefined {
+  if (hasKey(cause, "issues") && Array.isArray(cause.issues))
+    return { issues: toJson(cause.issues) };
+  if (cause instanceof Error && cause.constructor.name === "UnknownCauseError") {
+    const details = toJson(cause);
+    return isJsonObject(details) && Object.keys(details).length > 0 ? details : undefined;
+  }
+  return undefined;
 }
 
 /** The narrowing every read of a tRPC internal goes through. */

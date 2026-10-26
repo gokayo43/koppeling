@@ -194,6 +194,10 @@ test("an input the program's schema rejects answers a tool error carrying the sc
 
   expect(result.isError).toBe(true);
   expect(textOf(result)).toBe('Expected number, actual "1001"');
+  expect(result.structuredContent).toMatchObject({
+    refusal: 'Expected number, actual "1001"',
+    details: { issues: [{ path: ["orderId"], message: 'Expected number, actual "1001"' }] },
+  });
 });
 
 test("a misnamed field is refused before the program runs, naming the unknown keys and the allowed ones there", async () => {
@@ -448,4 +452,8 @@ test("an Elysia route's answer and refusal pass through call", async () => {
   expect(textOf(refused)).toBe(
     'HTTP 404: {"error":{"code":"plate_not_found","message":"Kenteken niet gevonden"}}',
   );
+  expect(refused.structuredContent).toEqual({
+    refusal: textOf(refused),
+    details: { error: { code: "plate_not_found", message: "Kenteken niet gevonden" } },
+  });
 });

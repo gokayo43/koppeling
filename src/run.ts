@@ -106,7 +106,9 @@ export function call<Actor>(
           settled("value", { text: JSON.stringify(value), structured: { result: value } }),
         );
       }
-      if ("refusal" in outcome) return Effect.succeed(settled("refusal", refusal(outcome.refusal)));
+      if ("refusal" in outcome) {
+        return Effect.succeed(settled("refusal", refusal(outcome.refusal, outcome.details)));
+      }
       return failed(outcome.failed, true);
     }),
     Effect.catchTags({

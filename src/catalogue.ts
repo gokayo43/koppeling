@@ -7,13 +7,14 @@ import type { Described } from "./schema";
 export type Kind = "read" | "write";
 
 /**
- * What a program answered: its value, its own refusal sentence, or a failure
+ * What a program answered: its value, its own refusal sentence with whatever
+ * structured details it gave (a list of the values it accepts), or a failure
  * after the program was reached, when whatever it was asked to change may have
  * changed.
  */
 export type Outcome =
   | { readonly value: Json }
-  | { readonly refusal: string }
+  | { readonly refusal: string; readonly details?: Json }
   | { readonly failed: unknown };
 
 /** One callable thing a program declares, as the door offers it. */

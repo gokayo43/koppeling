@@ -228,6 +228,22 @@ test("a 5xx answer is a failure after the program was reached, not a refusal it 
   );
 });
 
+test("a 4xx answer's JSON body comes back as the refusal's details, and a text body as none", async () => {
+  expect(
+    await operation("vehicles.lookup.get").run(
+      apiCaller,
+      { query: { license_plate: "00-XX-00" } },
+      unaborted,
+    ),
+  ).toEqual({
+    refusal: 'HTTP 404: {"error":{"code":"plate_not_found","message":"Kenteken niet gevonden"}}',
+    details: { error: { code: "plate_not_found", message: "Kenteken niet gevonden" } },
+  });
+  expect(await operation("vehicles.retired.get").run(apiCaller, {}, unaborted)).toEqual({
+    refusal: "HTTP 410: Gone",
+  });
+});
+
 test("a call goes through the app's own auth with the actor's credential", async () => {
   const product = operation("products.id.get");
 

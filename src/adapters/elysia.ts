@@ -367,13 +367,28 @@ async function request(
   try {
     const text = await bodyOf(response, signal);
     if (response.status >= 500) return { failed: new Error(`HTTP ${response.status}: ${text}`) };
-    if (!response.ok) return { refusal: `HTTP ${response.status}: ${text}` };
+    const json = response.headers.get("content-type")?.includes("json") === true;
+    if (!response.ok) {
+      const refusal = `HTTP ${response.status}: ${text}`;
+      const details = json ? parsedOrNothing(text) : undefined;
+      return details === undefined ? { refusal } : { refusal, details };
+    }
     if (text === "") return { value: null };
-    if (!response.headers.get("content-type")?.includes("json")) return { value: text };
+    if (!json) return { value: text };
     const parsed: unknown = JSON.parse(text);
     return { value: toJson(parsed) };
   } catch (cause) {
     return { failed: cause };
+  }
+}
+
+/** A refusal's JSON body as data, or nothing when it does not parse: its text still goes back. */
+function parsedOrNothing(text: string): Json | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return toJson(parsed);
+  } catch {
+    return undefined;
   }
 }
 
