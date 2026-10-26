@@ -159,7 +159,8 @@ function isOpen(schema) {
 * Every place in `value` where an object carries a key the closed `schema`
 * does not name there, outermost first. Where a combination's parts disagree
 * the keys of all of them are allowed, so a refusal is never wrong; a `$ref`
-* the door cannot resolve allows any key.
+* the door cannot resolve, or a conditional (`if`, `then`, `else`,
+* `dependentSchemas`), allows any key in its object.
 */
 function strayKeys(schema, value) {
 	if (value === void 0) return [];
@@ -189,7 +190,7 @@ function visit(met, value, at, strays) {
 	}
 	if (!isJsonObject(value)) return;
 	const allowed = new Set(here.flatMap(({ schema }) => Object.keys(propertiesOf(schema))));
-	const isClosed = here.some(({ schema }) => schema["additionalProperties"] === false || schema["unevaluatedProperties"] === false) && !here.some(({ schema }) => isOpen(schema));
+	const isClosed = here.some(({ schema }) => schema["additionalProperties"] === false || schema["unevaluatedProperties"] === false) && !here.some(({ schema, scope }) => isOpen(schema) || isOpaque(schema, scope));
 	const unknown = Object.keys(value).filter((key) => !allowed.has(key));
 	if (isClosed && unknown.length) strays.push({
 		at,
@@ -246,6 +247,21 @@ function expand$1(met, seen = /* @__PURE__ */ new Set()) {
 		scope
 	}];
 	return [own, ...[...parts, ...referred].flatMap((next) => expand$1(next, visited))];
+}
+/** Keys a schema may add to its object that the door does not follow. */
+const CONDITIONALS = [
+	"if",
+	"then",
+	"else",
+	"dependentSchemas"
+];
+/**
+* Whether a schema may name keys the door cannot read: through a `$ref` it
+* cannot resolve, or a conditional. Its object is then left open, since a
+* refusal must never be wrong.
+*/
+function isOpaque(schema, scope) {
+	return "$ref" in schema && resolve(schema["$ref"], scope) === void 0 || CONDITIONALS.some((key) => key in schema);
 }
 const holdsDefinitions = (schema) => "$defs" in schema || "definitions" in schema;
 /**

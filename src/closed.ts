@@ -130,7 +130,8 @@ export interface Stray {
  * Every place in `value` where an object carries a key the closed `schema`
  * does not name there, outermost first. Where a combination's parts disagree
  * the keys of all of them are allowed, so a refusal is never wrong; a `$ref`
- * the door cannot resolve allows any key.
+ * the door cannot resolve, or a conditional (`if`, `then`, `else`,
+ * `dependentSchemas`), allows any key in its object.
  */
 export function strayKeys(schema: JsonSchema, value: Json | undefined): Stray[] {
   if (value === undefined) return [];
@@ -165,8 +166,7 @@ function visit(met: readonly Met[], value: Json, at: string, strays: Stray[]): v
     here.some(
       ({ schema }) =>
         schema["additionalProperties"] === false || schema["unevaluatedProperties"] === false,
-    ) && !here.some(({ schema }) => isOpen(schema));
-
+    ) && !here.some(({ schema, scope }) => isOpen(schema) || isOpaque(schema, scope));
   const unknown = Object.keys(value).filter((key) => !allowed.has(key));
   if (isClosed && unknown.length) strays.push({ at, unknown, allowed: [...allowed] });
   for (const [key, item] of Object.entries(value)) {
@@ -221,6 +221,21 @@ function expand(met: Met, seen: ReadonlySet<JsonSchema> = new Set()): Met[] {
   const target = resolve(met.schema["$ref"], scope);
   const referred = target === undefined ? [] : [{ schema: target, scope }];
   return [own, ...[...parts, ...referred].flatMap((next) => expand(next, visited))];
+}
+
+/** Keys a schema may add to its object that the door does not follow. */
+const CONDITIONALS = ["if", "then", "else", "dependentSchemas"] as const;
+
+/**
+ * Whether a schema may name keys the door cannot read: through a `$ref` it
+ * cannot resolve, or a conditional. Its object is then left open, since a
+ * refusal must never be wrong.
+ */
+function isOpaque(schema: JsonSchema, scope: readonly JsonSchema[]): boolean {
+  return (
+    ("$ref" in schema && resolve(schema["$ref"], scope) === undefined) ||
+    CONDITIONALS.some((key) => key in schema)
+  );
 }
 
 const holdsDefinitions = (schema: JsonSchema) => "$defs" in schema || "definitions" in schema;

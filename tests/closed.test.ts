@@ -213,3 +213,27 @@ test("a key is judged through a $ref into the definitions of the document it cam
     }),
   ).toEqual([]);
 });
+
+test("a $ref the door cannot resolve, or a conditional, leaves its object open rather than refusing its keys", () => {
+  // The likeliest wrong collects allowed keys from the parts it resolved
+  // alone, so the keys of the part it could not read are refused.
+  const based = closed({
+    allOf: [{ $ref: "Base" }, { properties: { extra: { type: "string" } } }],
+  });
+  expect(strayKeys(based, { baseField: 1, extra: "x" })).toEqual([]);
+
+  const conditional = closed({
+    type: "object",
+    properties: { kind: { type: "string" } },
+    if: { properties: { kind: { const: "sku" } } },
+    // oxlint-disable-next-line unicorn/no-thenable -- JSON Schema's own keyword, never awaited
+    then: { properties: { sku: { type: "string" } } },
+  });
+  expect(strayKeys(conditional, { kind: "sku", sku: "S" })).toEqual([]);
+  const dependent = closed({
+    type: "object",
+    properties: { card: { type: "string" } },
+    dependentSchemas: { card: { properties: { expiry: { type: "string" } } } },
+  });
+  expect(strayKeys(dependent, { card: "c", expiry: "e" })).toEqual([]);
+});
