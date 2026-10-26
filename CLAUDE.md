@@ -28,15 +28,23 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
   areas, names, each operation's name without its area, the search index and
   the instructions outline.
 - `src/find.ts`: the search index and the ranking behind `find`.
-- `src/run.ts`: one `read` or `write`: the time limit, the outcomes and the
-  write events.
+- `src/closed.ts`: closed inputs: the input schema with every object that
+  names its keys closed, and the keys a call's input carries that it does not
+  name.
+- `src/derived.ts`: the line the door writes for an operation the program
+  wrote none for.
+- `src/run.ts`: one `read` or `write`: the stray-key refusal, the time limit,
+  the outcomes and the write events.
+- `src/pages.ts`: long answers in pages, and the door's store of them for
+  their next pages; `src/answer.ts`, what one tool call answers.
 - `src/tools.ts`: the five tools, their schemas built once, and the MCP server
   for one request (or for a refused person).
 - `src/events.ts`: what the door tells the host's logger, and Effect's logger
   as the default.
 - `src/glossary.ts`: `glossaryFrom`, a CONTEXT.md to the door's opening words.
 - `src/auth.ts`, `src/door.ts`: the bearer check and `koppeling()`, the HTTP
-  edge, in Effect.
+  edge, in Effect; `src/door.ts` also holds the public types the host's
+  options name (`Identity`, `KoppelingEvent`).
 - `src/copy.ts`: every sentence a person may read, in Dutch.
 - `tests/fixtures/`: a warehouse router shaped like wmstcs's and an API app
   shaped like nfp-elysia's, with invented values only; the suite and
@@ -89,6 +97,31 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   koppelingstoken reaches a door only exchanged for such a token. It signs with
   a new key the moment it rotates one, which is why the door's key-set refetch
   cool-down is 5 seconds (`src/auth.ts`).
+- **Effect 3 is bundled into `dist/` and is no peer** (`deps.alwaysBundle` in
+  `tsdown.config.ts`): a peer `effect` resolves to the host's own, and in the
+  portal, on Effect 4.0.6, an unbundled `dist/` fails at load ("does not
+  provide an export named 'JSONSchema'"). A host may run any Effect or none.
+  `dist/index.js` is about 607 KB, most of it Effect; the source and the suite
+  use the pinned dev dependency. The bundled copy declares Effect's two
+  `globalThis` keys under its own names (`ownGlobals` in `tsdown.config.ts`,
+  which fails the build when Effect moves either): under Effect's names it and
+  a host's own Effect 3 share one global store and log "Executing an Effect
+  versioned …" on every step. Its `Symbol.for` type identifiers stay Effect's,
+  which is how a host's Effect 3 schema is recognised across the copies.
+  `tests/bundled.test.ts` holds all of it. Keep every exported type out of a
+  module whose declarations import Effect: the declaration bundle inlines
+  whatever such a module imports, which is why the public types live in
+  `src/door.ts`.
+- **A long answer is paged at 40 000 characters** (`PAGE_SIZE` in
+  `src/pages.ts`): the API door's probe by a real agent saw Claude Code set a
+  tool result above about 50 000 characters aside instead of reading it. The
+  door keeps each long answer for ten minutes, 20 million characters over all
+  of them, oldest out first; one longer than that is never kept, so each of its
+  pages runs its read again. A `describe` carries an output schema up to 10 000
+  characters (`OUTPUT_BOUND` in `src/tools.ts`; the probe saw a describe of
+  203 000), and an answer goes as `structuredContent` too only under 10 000
+  characters (`STRUCTURED_BELOW`), since a client may pass the model both
+  copies.
 - **`knip` cannot load its config from a worktree under `.claude/`**: knip hands
   jiti `process.cwd()` as a file name, so jiti looks for a tsconfig from the
   parent directory and finds the main checkout's. Run it from `src/` with

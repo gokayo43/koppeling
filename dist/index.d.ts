@@ -1,4 +1,3 @@
-import { Effect } from "effect";
 import { JWTPayload } from "jose";
 import { AnyElysia } from "elysia";
 import { AnyTRPCRouter, inferRouterContext } from "@trpc/server";
@@ -15,7 +14,8 @@ type JsonSchema = JsonObject;
 /** `read` changes nothing; `write` changes data, so the person is asked first. */
 type Kind = "read" | "write";
 /**
- * What a program answered: its value, its own refusal sentence, or a failure
+ * What a program answered: its value, its own refusal sentence with whatever
+ * structured details it gave (a list of the values it accepts), or a failure
  * after the program was reached, when whatever it was asked to change may have
  * changed.
  */
@@ -23,6 +23,7 @@ type Outcome = {
   readonly value: Json;
 } | {
   readonly refusal: string;
+  readonly details?: Json;
 } | {
   readonly failed: unknown;
 };
@@ -32,7 +33,18 @@ interface Operation<Actor> {
   /** The part of the program it belongs to: by default its name's first segment. */
   readonly area: string;
   readonly kind: Kind;
-  readonly description: string | undefined;
+  /**
+   * The program's own words, or, where it wrote none, one line the door
+   * derived from the name's words and the input's fields.
+   */
+  readonly description: string;
+  /** Whether `description` is the program's own words rather than the door's line. */
+  readonly written: boolean;
+  /** Whether running it may destroy data: delete, or overwrite what cannot be had back. */
+  readonly destructive: boolean;
+  /** Whether running it again with the same input changes nothing more. */
+  readonly idempotent: boolean;
+  /** Every object that names its keys is closed: a call carrying any other key is refused. */
   readonly input: JsonSchema;
   readonly output: JsonSchema | undefined;
   /**
@@ -41,6 +53,17 @@ interface Operation<Actor> {
    * was reached, so nothing changed.
    */
   readonly run: (actor: Actor, input: Json | undefined, signal: AbortSignal) => Promise<Outcome>;
+}
+/**
+ * What a program may say to the door about one operation, as a tRPC
+ * procedure's `meta.koppeling` or an Elysia route's `detail.koppeling`, each
+ * overriding what the door would derive; `false` there withholds the
+ * operation instead.
+ */
+interface KoppelingMeta {
+  readonly description?: string;
+  readonly destructive?: boolean;
+  readonly idempotent?: boolean;
 }
 /** One operation the boot report names, and why. */
 interface Note {
@@ -60,8 +83,11 @@ interface Catalogue<Actor> {
 //#region src/adapters/elysia.d.ts
 declare module "elysia" {
   interface DocumentDecoration {
-    /** `false` keeps this route from the koppeling: the door skips it and names it in its boot report. */
-    koppeling?: boolean;
+    /**
+     * What the route says to the koppeling, over what the door derives; `false`
+     * keeps the route from it, and the door names it in its boot report.
+     */
+    koppeling?: false | KoppelingMeta;
   }
 }
 interface ElysiaOptions<Actor> {
@@ -95,12 +121,14 @@ interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
 }
 /**
  * The catalogue of a tRPC v11 router: every query and mutation, named by its
- * path. Subscriptions and the procedures the program withholds from the door
+ * path. A mutation is destructive and not idempotent, a query neither
+ * destroys nor repeats anything, unless `meta.koppeling` says otherwise.
+ * Subscriptions and the procedures the program withholds from the door
  * (`meta.koppeling: false`) are skipped and named in the boot report.
  */
 export declare function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(router: Router, options: TrpcOptions<Router, Actor>): Catalogue<Actor>;
 //#endregion
-//#region src/auth.d.ts
+//#region src/door.d.ts
 /** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
 interface Identity {
   /** The `iss` every token must carry: the provider's public origin. */
@@ -114,8 +142,6 @@ interface Identity {
   /** The authorization server the metadata document sends a client to for its sign-in. */
   readonly authorizationServer: string;
 }
-//#endregion
-//#region src/events.d.ts
 /**
  * What a write came to: the program's value, its refusal, a failure before the
  * program was reached (nothing changed), or `unknown`: the program was reached
@@ -126,7 +152,7 @@ type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
  * What the door tells the host's logger. `write`: one per call of a write
  * operation, naming the person and the program acting for them. `failure`: a
  * failure the person was answered with the door's own sentence for; its
- * `operation` is null when the sign-in failed (the key set, or `actorFor`).
+ * `operation` is null when the sign-in failed (the key set, `actorFor` or `allows`).
  */
 type KoppelingEvent = {
   readonly kind: "write";
@@ -140,11 +166,15 @@ type KoppelingEvent = {
   readonly operation: string | null;
   readonly cause: unknown;
 };
-//#endregion
-//#region src/door.d.ts
-/** Who a token's person is to the program, or the program's sentence for why they may not come in. */
+/**
+ * Who a token's person is to the program, with the operations they may use
+ * (every one when `allows` is absent), or the program's sentence for why they
+ * may not come in.
+ */
 type ActorDecision<Actor> = {
   readonly actor: Actor;
+  /** Whether the person may use `operation`: the door lists, finds, describes and runs only those. */
+  readonly allows?: (operation: Operation<Actor>) => boolean;
 } | {
   readonly refusal: string;
 };
@@ -196,4 +226,4 @@ interface GlossaryOptions {
  */
 export declare function glossaryFrom(markdown: string, options: GlossaryOptions): string;
 //#endregion
-export type { ActorDecision, BootReport, Catalogue, ElysiaOptions, GlossaryOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingEvent, KoppelingOptions, Note, Operation, Outcome, TrpcOptions, WriteOutcome };
+export type { ActorDecision, BootReport, Catalogue, ElysiaOptions, GlossaryOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingEvent, KoppelingMeta, KoppelingOptions, Note, Operation, Outcome, TrpcOptions, WriteOutcome };

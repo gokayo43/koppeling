@@ -7,6 +7,7 @@ import { copy } from "../src/copy";
 import { toDirectory } from "../src/directory";
 import { reporter } from "../src/events";
 import { fromElysia } from "../src/index";
+import { Pages } from "../src/pages";
 import { call, OPERATION_TIME_LIMIT } from "../src/run";
 import { credential } from "./fixtures/api";
 import { apiCaller, warehouseAdmin, warehouseDirectory, warehousePicker } from "./fixtures/doors";
@@ -71,6 +72,7 @@ test("without a host logger the write event goes to Effect's logger, annotated",
     actor: warehouseAdmin,
     claims,
     report: reporter(undefined),
+    pages: new Pages(),
   };
   await Effect.runPromise(
     call(session, "write", "printer.printShelve", { shelfCode: "A3" }).pipe(

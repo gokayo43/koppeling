@@ -1,5 +1,6 @@
 import type { Operation } from "./catalogue";
-import { isJsonArray, isJsonObject, type JsonSchema } from "./json";
+import type { JsonSchema } from "./json";
+import { properties } from "./schema";
 
 /** The most operations one `find` answers. */
 export const FIND_LIMIT = 10;
@@ -32,23 +33,33 @@ const WEIGHTS = { name: 3, description: 2, area: 2, input: 1 } as const;
 type Field = keyof typeof WEIGHTS;
 const FIELDS: readonly Field[] = ["name", "description", "area", "input"];
 
+/**
+ * What each word counts once more when the words name an area or a leaf
+ * whole: an exact name ranks above the same word met inside another name
+ * ("stock" inside "restock"), however rare that other word is.
+ */
+const WHOLE_WEIGHT = WEIGHTS.name;
+
 /** The shortest stem a prefix match may take, so "in" does not match "inventory". */
 const MIN_PREFIX = 4;
 
 /** The shortest shared start that makes two words cousins. */
 const COGNATE_PREFIX = 5;
 
-/**
- * The words of a text: split on anything but letters and digits and at
- * camelCase humps, lower-cased, stopwords dropped, each reduced to a stem.
- */
-export function stems(text: string): string[] {
+/** The words of a text: split on anything but letters and digits and at camelCase humps, lower-cased. */
+export function wordsOf(text: string): string[] {
   return text
     .replaceAll(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replaceAll(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
-    .filter((word) => word && !STOPWORDS.has(word))
+    .filter(Boolean);
+}
+
+/** The words of a text that say something, stopwords dropped, each reduced to a stem. */
+export function stems(text: string): string[] {
+  return wordsOf(text)
+    .filter((word) => !STOPWORDS.has(word))
     .map(stem);
 }
 
@@ -107,7 +118,7 @@ export function searchIndex<Actor>(
     words: {
       name: stems(leaf),
       area: stems(operation.area),
-      description: stems(operation.description ?? ""),
+      description: operation.written ? stems(operation.description) : [],
       input: stems(fieldNames(operation.input).join(" ")),
     },
   }));
@@ -120,32 +131,44 @@ export function searchIndex<Actor>(
   return { entries, carrying };
 }
 
-/** The property names of a schema, two levels deep, through allOf and anyOf. */
+/** The property names of a schema, two levels deep, through its combinations. */
 function fieldNames(schema: JsonSchema, depth = 0): string[] {
   if (depth > 2) return [];
-  const properties = schema["properties"];
-  const own = isJsonObject(properties) ? Object.entries(properties) : [];
-  const nested = own.flatMap(([, child]) =>
-    isJsonObject(child) ? fieldNames(child, depth + 1) : [],
-  );
-  const combined = [schema["allOf"], schema["anyOf"]].flatMap((list) =>
-    isJsonArray(list)
-      ? list.flatMap((part) => (isJsonObject(part) ? fieldNames(part, depth) : []))
-      : [],
-  );
-  return [...own.map(([name]) => name), ...nested, ...combined];
+  const own = properties(schema);
+  return [
+    ...own.map(([name]) => name),
+    ...own.flatMap(([, child]) => fieldNames(child, depth + 1)),
+  ];
+}
+
+/**
+ * The asked words that name an operation's area or its leaf whole, every word
+ * of it asked: "stock" names the area "stock", and "product categories list"
+ * the area "product-categories", while it only shares "categories" with
+ * "admin.products.categories.get".
+ */
+function namedWhole(own: Words, asked: ReadonlySet<string>): Set<string> {
+  const named = new Set<string>();
+  for (const words of [own.area, own.name]) {
+    if (words.length > 0 && words.every((word) => asked.has(word))) {
+      for (const word of words) named.add(word);
+    }
+  }
+  return named;
 }
 
 /**
  * The operations whose words best meet `words`, best first, at most
  * {@link FIND_LIMIT}, and none that meets none of them. A word counts in each
  * field it meets, by that field's weight and by how rare its match is among the
- * operations, so a word every operation carries ranks nothing.
+ * operations, so a word every operation carries ranks nothing; and once more
+ * where it helps name an area or a leaf whole.
  */
 export function find<Actor>(index: SearchIndex<Actor>, words: string): Operation<Actor>[] {
   const query = [...new Set(stems(words))];
   const rarity = (word: string) =>
     Math.log(1 + index.entries.length / Math.max(index.carrying.get(word) ?? 0, 1));
+  const asked = new Set(query);
   const scored = index.entries.map(({ operation, words: own }) => {
     let score = 0;
     for (const word of query) {
@@ -157,6 +180,7 @@ export function find<Actor>(index: SearchIndex<Actor>, words: string): Operation
         score += best;
       }
     }
+    for (const word of namedWhole(own, asked)) score += WHOLE_WEIGHT * rarity(word);
     return { operation, score };
   });
   return scored

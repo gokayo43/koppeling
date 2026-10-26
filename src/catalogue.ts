@@ -1,3 +1,4 @@
+import { closed } from "./closed";
 import { copy } from "./copy";
 import type { Json, JsonSchema } from "./json";
 import type { Described } from "./schema";
@@ -6,13 +7,14 @@ import type { Described } from "./schema";
 export type Kind = "read" | "write";
 
 /**
- * What a program answered: its value, its own refusal sentence, or a failure
+ * What a program answered: its value, its own refusal sentence with whatever
+ * structured details it gave (a list of the values it accepts), or a failure
  * after the program was reached, when whatever it was asked to change may have
  * changed.
  */
 export type Outcome =
   | { readonly value: Json }
-  | { readonly refusal: string }
+  | { readonly refusal: string; readonly details?: Json }
   | { readonly failed: unknown };
 
 /** One callable thing a program declares, as the door offers it. */
@@ -21,7 +23,18 @@ export interface Operation<Actor> {
   /** The part of the program it belongs to: by default its name's first segment. */
   readonly area: string;
   readonly kind: Kind;
-  readonly description: string | undefined;
+  /**
+   * The program's own words, or, where it wrote none, one line the door
+   * derived from the name's words and the input's fields.
+   */
+  readonly description: string;
+  /** Whether `description` is the program's own words rather than the door's line. */
+  readonly written: boolean;
+  /** Whether running it may destroy data: delete, or overwrite what cannot be had back. */
+  readonly destructive: boolean;
+  /** Whether running it again with the same input changes nothing more. */
+  readonly idempotent: boolean;
+  /** Every object that names its keys is closed: a call carrying any other key is refused. */
   readonly input: JsonSchema;
   readonly output: JsonSchema | undefined;
   /**
@@ -37,6 +50,52 @@ export type Declared<Actor> = Omit<Operation<Actor>, "input" | "output"> & {
   readonly input: Described;
   readonly output: Described | undefined;
 };
+
+/**
+ * What a program may say to the door about one operation, as a tRPC
+ * procedure's `meta.koppeling` or an Elysia route's `detail.koppeling`, each
+ * overriding what the door would derive; `false` there withholds the
+ * operation instead.
+ */
+export interface KoppelingMeta {
+  readonly description?: string;
+  readonly destructive?: boolean;
+  readonly idempotent?: boolean;
+}
+
+const META_KEYS = new Set(["description", "destructive", "idempotent"]);
+
+/**
+ * A procedure's or route's `koppeling` value: `withheld` for `false`, what it
+ * says otherwise. Anything but `false`, nothing or an object of the door's
+ * own keys fails the boot, naming `owner`: a misspelled hint the door ignored
+ * would describe the operation wrongly with nothing to say so.
+ */
+export function koppelingMeta(
+  // oxlint-disable-next-line anti-slop/no-unknown-parameters -- the program's own meta, whatever it wrote there
+  value: unknown,
+  owner: string,
+): "withheld" | KoppelingMeta {
+  if (value === false) return "withheld";
+  if (value === undefined) return {};
+  const fail = (why: string) =>
+    new Error(
+      `${owner} ${why}; it is false, or an object of description (text), destructive and idempotent (true or false)`,
+    );
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw fail(`is ${JSON.stringify(value)}`);
+  }
+  const meta: { description?: string; destructive?: boolean; idempotent?: boolean } = {};
+  for (const [key, given] of Object.entries(value)) {
+    if (!META_KEYS.has(key)) throw fail(`names "${key}"`);
+    if (key === "description" && typeof given === "string") {
+      if (given.trim()) meta.description = given.trim();
+    } else if (key === "destructive" && typeof given === "boolean") meta.destructive = given;
+    else if (key === "idempotent" && typeof given === "boolean") meta.idempotent = given;
+    else throw fail(`gives ${key} as ${JSON.stringify(given)}`);
+  }
+  return meta;
+}
 
 /** One operation the boot report names, and why. */
 export interface Note {
@@ -94,7 +153,7 @@ export function catalogue<Actor>(
   const operations = declared
     .map((operation) => ({
       ...operation,
-      input: schemaOf(operation.name, "input", operation.input),
+      input: closed(schemaOf(operation.name, "input", operation.input)),
       output:
         operation.output === undefined
           ? undefined

@@ -26,26 +26,50 @@ function leafOf(operation: Operation<never>): string {
 }
 
 export function toDirectory<Actor>(catalogue: Catalogue<Actor>): Directory<Actor> {
-  const leaves = catalogue.operations.map((operation) => ({ operation, leaf: leafOf(operation) }));
-  const grouped = new Map<string, { operation: Operation<Actor>; leaf: string }[]>();
-  for (const entry of leaves) {
-    grouped.set(entry.operation.area, [...(grouped.get(entry.operation.area) ?? []), entry]);
+  const { operations } = catalogue;
+  return assembled(
+    operations,
+    searchIndex(operations.map((operation) => ({ operation, leaf: leafOf(operation) }))),
+  );
+}
+
+/**
+ * The part of `directory` one person may use: the operations `allows`
+ * admits, by area, by name and for `find`. The search keeps the whole
+ * catalogue's word counts, so a word's rarity, and with it the ranking, is
+ * the same for everyone; no operation outside the part is named by it.
+ */
+export function admitted<Actor>(
+  directory: Directory<Actor>,
+  allows: (operation: Operation<Actor>) => boolean,
+): Directory<Actor> {
+  const kept = directory.operations.filter((operation) => allows(operation));
+  const keep = new Set(kept);
+  return assembled(kept, {
+    entries: directory.search.entries.filter(({ operation }) => keep.has(operation)),
+    carrying: directory.search.carrying,
+  });
+}
+
+function assembled<Actor>(
+  operations: readonly Operation<Actor>[],
+  search: SearchIndex<Actor>,
+): Directory<Actor> {
+  const grouped = new Map<string, Operation<Actor>[]>();
+  for (const operation of operations) {
+    grouped.set(operation.area, [...(grouped.get(operation.area) ?? []), operation]);
   }
   const areas = new Map(
-    Array.from(grouped, ([name, entries]) => [
+    Array.from(grouped, ([name, members]) => [
       name,
-      {
-        name,
-        summary: summaryOf(entries.map(({ leaf }) => leaf)),
-        operations: entries.map(({ operation }) => operation),
-      },
+      { name, summary: summaryOf(members.map(leafOf)), operations: members },
     ]),
   );
   return {
-    operations: catalogue.operations,
+    operations,
     areas,
-    byName: new Map(catalogue.operations.map((operation) => [operation.name, operation])),
-    search: searchIndex(leaves),
+    byName: new Map(operations.map((operation) => [operation.name, operation])),
+    search,
   };
 }
 

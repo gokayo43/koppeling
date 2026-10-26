@@ -107,11 +107,14 @@ test("the input composes the route's params, query and body, and the output is i
         type: "object",
         required: ["lookup_id"],
         properties: { lookup_id: { type: "string" } },
+        additionalProperties: false,
       },
+      query: { type: "object", additionalProperties: true, description: copy.undeclaredPart },
       body: {
         type: "object",
         required: ["option_index"],
         properties: { option_index: { type: "number" } },
+        additionalProperties: false,
       },
     },
     required: ["params", "body"],
@@ -128,6 +131,34 @@ test("the input composes the route's params, query and body, and the output is i
   });
   expect(operation("orders.post").input).toMatchObject({
     properties: { body: { anyOf: [{ type: "object" }, {}] } },
+  });
+  expect(operation("orders.post").input["properties"]).not.toHaveProperty(
+    "body.unevaluatedProperties",
+  );
+});
+
+test("a part the route declares no schema for is shown open and not required, a body only where the method carries one", () => {
+  // The likeliest wrong shape closes every part: a handler that reads a query
+  // or a body it never declared would then be refused what it reads.
+  const app = new Elysia().get("/api/v1/tree", () => 1).post("/api/v1/notes", () => 1);
+  const [notes, tree] = fromElysia(app, { credential, mount: "/api/v1" }).operations;
+
+  expect(tree?.input).toEqual({
+    type: "object",
+    properties: {
+      query: { type: "object", additionalProperties: true, description: copy.undeclaredPart },
+    },
+    required: [],
+    additionalProperties: false,
+  });
+  expect(notes?.input).toEqual({
+    type: "object",
+    properties: {
+      query: { type: "object", additionalProperties: true, description: copy.undeclaredPart },
+      body: { description: copy.undeclaredPart },
+    },
+    required: [],
+    additionalProperties: false,
   });
 });
 
@@ -173,7 +204,64 @@ test("summary and description become the operation's line and its detail", () =>
   expect(operation("vehicles.lookup.get").description).toBe(
     "License plate vehicle lookup\nResolves a Dutch license plate to its vehicle.",
   );
-  expect(operation("orders.fail.get").description).toBeUndefined();
+  expect(operation("vehicles.lookup.get").written).toBe(true);
+});
+
+test("a route's hints follow its method, and detail.koppeling overrides them", () => {
+  // The likeliest wrong derivation treats every write alike, so a DELETE reads
+  // as safe to retry blindly and a PUT as not.
+  const app = new Elysia({ prefix: "/api" })
+    .get("/stock", () => 1)
+    .put("/stock", () => 1)
+    .delete("/stock", () => 1)
+    .post("/stock", () => 1)
+    .patch("/stock", () => 1)
+    .post("/refunds", () => 1, { detail: { koppeling: { destructive: true } } });
+  const hints = fromElysia(app, { credential, mount: "/api" }).operations.map(
+    ({ name, destructive, idempotent }) => [name, destructive, idempotent],
+  );
+
+  expect(hints).toEqual([
+    ["refunds.post", true, false],
+    ["stock.delete", true, true],
+    ["stock.get", false, true],
+    ["stock.patch", false, false],
+    ["stock.post", false, false],
+    ["stock.put", false, true],
+  ]);
+  expect(() =>
+    fromElysia(
+      new Elysia().post("/api/x", () => 1, {
+        // oxlint-disable-next-line typescript/no-unsafe-assignment -- a detail its type forbids, on purpose
+        detail: Object({ koppeling: { hint: 1 } }),
+      }),
+      {
+        credential,
+        mount: "/api",
+      },
+    ),
+  ).toThrow("Elysia route POST /api/x: detail.koppeling");
+});
+
+test("a route without a summary gets one line from its path's words and its input's fields; a written one wins", () => {
+  const app = new Elysia({ prefix: "/api/v1" })
+    .put("/admin/products/:id", () => 1, {
+      params: t.Object({ id: t.Numeric() }),
+      body: t.Object({ name: t.String(), price: t.Number(), sku: t.String() }),
+    })
+    .get("/product-categories", () => [])
+    .delete("/notes/:id", () => 1, {
+      detail: { summary: "Remove a note", koppeling: { description: "Verwijdert een notitie." } },
+    });
+  const described = fromElysia(app, { credential, mount: "/api/v1" }).operations.map(
+    ({ name, description, written }) => [name, description, written],
+  );
+
+  expect(described).toEqual([
+    ["admin.products.id.put", "Vervangt: admin products id. Invoer: id, name, price, sku.", false],
+    ["notes.id.delete", "Verwijdert een notitie.", true],
+    ["product-categories.get", "Leest: product categories.", false],
+  ]);
 });
 
 test("a guard's schema is composed with the route's own", () => {
@@ -195,6 +283,22 @@ test("a 5xx answer is a failure after the program was reached, not a refusal it 
   expect("failed" in outcome && String(outcome.failed)).toBe(
     "Error: HTTP 500: database unavailable",
   );
+});
+
+test("a 4xx answer's JSON body comes back as the refusal's details, and a text body as none", async () => {
+  expect(
+    await operation("vehicles.lookup.get").run(
+      apiCaller,
+      { query: { license_plate: "00-XX-00" } },
+      unaborted,
+    ),
+  ).toEqual({
+    refusal: 'HTTP 404: {"error":{"code":"plate_not_found","message":"Kenteken niet gevonden"}}',
+    details: { error: { code: "plate_not_found", message: "Kenteken niet gevonden" } },
+  });
+  expect(await operation("vehicles.retired.get").run(apiCaller, {}, unaborted)).toEqual({
+    refusal: "HTTP 410: Gone",
+  });
 });
 
 test("a call goes through the app's own auth with the actor's credential", async () => {
@@ -286,7 +390,7 @@ test("a path parameter that is empty, '.' or '..' is refused, so a call never re
     .post("/outside", () => ran.push("POST /outside"))
     .post("/api/v1/admin/refund", () => ran.push("POST /api/v1/admin/refund"))
     .post("/api/v1/orders/:a/:b/refund", () => ran.push("POST /api/v1/orders/:a/:b/refund"));
-  const [refund] = fromElysia(app, { credential, mount: "/api/v1" }).operations.filter(
+  const refund = fromElysia(app, { credential, mount: "/api/v1" }).operations.find(
     ({ name }) => name === "orders.a.b.refund.post",
   );
   for (const params of [

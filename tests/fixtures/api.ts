@@ -108,6 +108,13 @@ export function apiApp(invoked: (route: string) => void = () => {}) {
       detail: { summary: "Price of a product for a vehicle" },
     });
 
+  const productCategories = new Elysia({ prefix: "/api/v1/product-categories" })
+    .use(auth)
+    .get("/", () => ({ data: [{ id: 1, name: "Remmen" }] }))
+    .get("/:id", ({ params }) => ({ data: { id: params.id, name: "Remmen" } }), {
+      params: t.Object({ id: t.Numeric() }),
+    });
+
   const orders = new Elysia({ prefix: "/api/v1/orders" })
     .use(auth)
     .post("/", ({ body }) => ({ token: "ord-1", body }), {
@@ -137,6 +144,7 @@ export function apiApp(invoked: (route: string) => void = () => {}) {
     .ws("/api/v1/live", { message() {} })
     .use(vehicles)
     .use(products)
+    .use(productCategories)
     .use(orders);
 }
 

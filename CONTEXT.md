@@ -32,3 +32,8 @@ part at a time.
 
 **Catalogus** (catalogue): every operation a program offers through its
 koppeling, as the program itself declares them when it starts.
+
+**Vervolg** (continuation): the next part of an answer too long to give in one
+go. The koppeling gives a long answer in parts, and each part says which part
+it is and how to ask for the next; the parts put together are the whole answer,
+so nothing is ever left out.

@@ -66,3 +66,45 @@ test("find answers at most ten, best first, ties in name order", () => {
   expect(found).toHaveLength(FIND_LIMIT);
   expect(found).toEqual(found.toSorted());
 });
+
+test("an area or a leaf named whole by the words outranks words matched across other names", () => {
+  // Shaped like the API's door, where "product categories list" never
+  // surfaced the area named "product-categories": summing word matches alone
+  // ranks first whatever carries the rare "list" in its name.
+  const { operations } = sketched([
+    { name: "admin.products.categories.get", area: "admin.products", fields: ["search"] },
+    { name: "admin.products.categories.id.get", area: "admin.products", fields: ["id"] },
+    { name: "admin.products.get", area: "admin.products", fields: ["search", "category"] },
+    { name: "product-categories.get" },
+    { name: "product-categories.id.get", fields: ["id"] },
+    { name: "products.get", fields: ["search", "category", "page"] },
+    { name: "media-collections.list.get" },
+  ]);
+
+  expect(
+    names(
+      find(
+        toDirectory({ operations, skipped: [], undescribed: [] }).search,
+        "product categories list",
+      ),
+    ).slice(0, 2),
+  ).toEqual(["product-categories.get", "product-categories.id.get"]);
+});
+
+test("an exact match on a one-word area ranks above a word met inside another name", () => {
+  // "restock" carries "stock" inside it, and it is rarer than the area's
+  // name, so ranking by rarity alone put orders.restock above stock.*.
+  const { operations } = sketched([
+    { name: "stock.get" },
+    { name: "stock.levels" },
+    { name: "stock.move", kind: "write" },
+    { name: "orders.restock", kind: "write" },
+    { name: "orders.get" },
+    { name: "labels.get" },
+  ]);
+  const found = names(
+    find(toDirectory({ operations, skipped: [], undescribed: [] }).search, "stock"),
+  );
+
+  expect(found.slice(0, 3).toSorted()).toEqual(["stock.get", "stock.levels", "stock.move"]);
+});

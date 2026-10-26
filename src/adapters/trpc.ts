@@ -4,12 +4,14 @@ import {
   catalogue,
   firstSegment,
   type Catalogue,
+  koppelingMeta,
   type Declared,
   type Kind,
   type Note,
   type Outcome,
 } from "../catalogue";
-import { toJson, type Json } from "../json";
+import { derivedLine, fieldNames } from "../derived";
+import { boundedJson, isJsonObject, toJson, type Json, type JsonObject } from "../json";
 import { allOf, describeSchema, type Described } from "../schema";
 
 export interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
@@ -31,7 +33,9 @@ function kindOf(type: string): Kind | undefined {
 
 /**
  * The catalogue of a tRPC v11 router: every query and mutation, named by its
- * path. Subscriptions and the procedures the program withholds from the door
+ * path. A mutation is destructive and not idempotent, a query neither
+ * destroys nor repeats anything, unless `meta.koppeling` says otherwise.
+ * Subscriptions and the procedures the program withholds from the door
  * (`meta.koppeling: false`) are skipped and named in the boot report.
  */
 export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
@@ -46,9 +50,24 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
   const run = async (
     actor: Actor,
     path: string,
+    parsers: readonly unknown[],
     input: Json | undefined,
     signal: AbortSignal,
   ): Promise<Outcome> => {
+    const issues = await inputIssues(parsers, input);
+    const [first] = issues;
+    if (first !== undefined) {
+      const message = first["message"];
+      if (
+        issues.some((issue) => typeof issue["message"] !== "string") ||
+        typeof message !== "string"
+      ) {
+        throw new Error(
+          `tRPC procedure "${path}": an input issue without a message, which Standard Schema requires of every issue`,
+        );
+      }
+      return { refusal: message, details: { issues } };
+    }
     let target: unknown = router.createCaller(await options.contextFor(actor), { signal });
     for (const segment of path.split(".")) {
       // oxlint-disable-next-line typescript/no-unsafe-member-access -- the caller proxy, walked by the path tRPC itself named
@@ -63,7 +82,11 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       const answer: unknown = await target(input);
       return { value: toJson(answer) };
     } catch (error) {
-      return isRefusal(error) ? { refusal: error.message } : { failed: error };
+      if (!isRefusal(error)) return { failed: error };
+      const details = detailsOf(error.cause);
+      return details === undefined
+        ? { refusal: error.message }
+        : { refusal: error.message, details };
     }
   };
   const declared: Declared<Actor>[] = [];
@@ -74,20 +97,36 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       skipped.push({ name: path, reason: `${definition.type}, which the door does not serve` });
       continue;
     }
-    if (definition.withheld) {
+    const owner = `tRPC procedure "${path}"`;
+    const meta = koppelingMeta(definition.koppeling, `${owner}: meta.koppeling`);
+    if (meta === "withheld") {
       skipped.push({ name: path, reason: "withheld by the program" });
       continue;
     }
-    const owner = `tRPC procedure "${path}"`;
+    const described =
+      allOf(definition.inputs.map((parser) => describeSchema(parser, owner, "input"))) ?? NO_INPUT;
+    const write = kind === "write";
+    const written = meta.description ?? definition.description;
     declared.push({
       name: path,
       area: firstSegment(path),
       kind,
-      description: definition.description,
-      input: allOf(definition.inputs.map((parser) => describeSchema(parser, owner))) ?? NO_INPUT,
+      description:
+        written ??
+        derivedLine(
+          write ? "run" : "read",
+          path,
+          "schema" in described ? fieldNames(described.schema) : [],
+        ),
+      written: written !== undefined,
+      destructive: meta.destructive ?? write,
+      idempotent: meta.idempotent ?? !write,
+      input: described,
       output:
-        definition.output === undefined ? undefined : describeSchema(definition.output, owner),
-      run: (actor, input, signal) => run(actor, path, input, signal),
+        definition.output === undefined
+          ? undefined
+          : describeSchema(definition.output, owner, "output"),
+      run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal),
     });
   }
   return catalogue(declared, skipped);
@@ -98,8 +137,8 @@ interface ProcedureDefinition {
   readonly inputs: readonly unknown[];
   readonly output: unknown;
   readonly description: string | undefined;
-  /** `meta.koppeling === false`: the program keeps this procedure from the door. */
-  readonly withheld: boolean;
+  /** `meta.koppeling`, as the program wrote it. */
+  readonly koppeling: unknown;
 }
 
 /**
@@ -144,7 +183,7 @@ function procedureDefinitions(router: AnyTRPCRouter): [string, ProcedureDefiniti
         output: hasKey(def, "output") ? def.output : undefined,
         description:
           typeof description === "string" && description.trim() ? description.trim() : undefined,
-        withheld: hasKey(meta, "koppeling") && meta.koppeling === false,
+        koppeling: hasKey(meta, "koppeling") ? meta.koppeling : undefined,
       },
     ];
   });
@@ -164,6 +203,63 @@ function isRefusal(error: unknown): error is Error {
     hasKey(error, "code") &&
     error.code !== "INTERNAL_SERVER_ERROR"
   );
+}
+
+/**
+ * The issues the procedure's own input schemas find in `input`, each schema
+ * asked through Standard Schema's `validate` as tRPC itself asks it, so a
+ * refused input answers every issue as data and the program never runs. A
+ * parser that is no Standard Schema, or whose `validate` throws, is left to
+ * tRPC's own parse, whose refusal then comes back as its sentence alone.
+ *
+ * This runs before the procedure's own chain, its authorization included, on
+ * purpose: every caller already holds a token for this door, and `describe`
+ * shows that same input schema to every such caller, so the issues reveal
+ * nothing the schema does not. That holds for a schema whose checks read only
+ * the input; a check that reads data (an async `refine` that queries a
+ * database) runs here before the program's authorization, and what its issue
+ * says reaches a caller the program would have refused.
+ */
+async function inputIssues(
+  parsers: readonly unknown[],
+  input: Json | undefined,
+): Promise<JsonObject[]> {
+  const issues: JsonObject[] = [];
+  for (const parser of parsers) {
+    const standard = hasKey(parser, "~standard") ? parser["~standard"] : undefined;
+    if (!hasKey(standard, "validate") || typeof standard.validate !== "function") continue;
+    let result: unknown;
+    try {
+      // oxlint-disable-next-line typescript/no-unsafe-call -- Standard Schema's validate, checked to be a function
+      result = await standard.validate(input);
+    } catch {
+      continue;
+    }
+    if (!hasKey(result, "issues") || !Array.isArray(result.issues)) continue;
+    for (const issue of result.issues) {
+      const json = boundedJson(issue);
+      if (isJsonObject(json)) issues.push(json);
+    }
+  }
+  return issues;
+}
+
+/**
+ * A refusal's structured details, as data beside its sentence: its cause's
+ * own `details` object (the convention a program's refusal follows, such as
+ * `{ opties: [...] }`), and nothing else of the cause, since a cause is
+ * whatever object the program attached. Reading it never throws: a cause that
+ * cannot be read gives none, and the refusal's sentence still reaches the
+ * agent.
+ */
+function detailsOf(cause: unknown): Json | undefined {
+  try {
+    const details = hasKey(cause, "details") ? boundedJson(cause.details) : undefined;
+    return isJsonObject(details) ? details : undefined;
+  } catch {
+    // A getter that throws, or a proxy that refuses to be read: no details.
+    return undefined;
+  }
 }
 
 /** The narrowing every read of a tRPC internal goes through. */
