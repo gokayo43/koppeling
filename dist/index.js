@@ -16,21 +16,44 @@ function isJsonArray(value) {
 * `JSON.stringify` throws on the first and writes `{}` for the other two.
 */
 function toJson(value) {
+	return walk(value, void 0);
+}
+/** How deep {@link boundedJson} follows a value before it writes `null` instead. */
+const BOUND_DEPTH = 12;
+/**
+* {@link toJson} for a value the program did not mean as an answer (a
+* refusal's details): an `Error` becomes its message, a value met again
+* inside itself becomes `null`, and so does anything deeper than
+* {@link BOUND_DEPTH}, so a looping or endless object cannot exhaust the stack.
+*/
+function boundedJson(value) {
+	return walk(value, {
+		depth: 0,
+		around: /* @__PURE__ */ new Set()
+	});
+}
+function walk(value, bound) {
 	if (typeof value === "string" || typeof value === "boolean") return value;
 	if (typeof value === "number") return Number.isFinite(value) ? value + 0 : null;
 	if (typeof value === "bigint") return value.toString();
-	if (typeof value === "object" && value !== null) return objectToJson(value);
-	return null;
+	if (typeof value !== "object" || value === null) return null;
+	if (bound === void 0) return objectToJson(value, void 0);
+	if (value instanceof Error) return value.message;
+	if (bound.depth >= BOUND_DEPTH || bound.around.has(value)) return null;
+	return objectToJson(value, {
+		depth: bound.depth + 1,
+		around: new Set(bound.around).add(value)
+	});
 }
-function objectToJson(value) {
-	if (Array.isArray(value)) return value.map((item) => toJson(item));
-	if (value instanceof Map) return Object.fromEntries(Array.from(value, ([key, item]) => [String(key), toJson(item)]));
-	if (value instanceof Set) return Array.from(value, (item) => toJson(item));
-	if ("toJSON" in value && typeof value.toJSON === "function") return toJson(value.toJSON());
+function objectToJson(value, bound) {
+	if (Array.isArray(value)) return value.map((item) => walk(item, bound));
+	if (value instanceof Map) return Object.fromEntries(Array.from(value, ([key, item]) => [String(key), walk(item, bound)]));
+	if (value instanceof Set) return Array.from(value, (item) => walk(item, bound));
+	if ("toJSON" in value && typeof value.toJSON === "function") return walk(value.toJSON(), bound);
 	const entries = [];
 	for (const [key, item] of Object.entries(value)) {
 		const kind = typeof item;
-		if (kind !== "undefined" && kind !== "function" && kind !== "symbol") entries.push([key, toJson(item)]);
+		if (kind !== "undefined" && kind !== "function" && kind !== "symbol") entries.push([key, walk(item, bound)]);
 	}
 	return Object.fromEntries(entries);
 }
@@ -791,7 +814,7 @@ function fromTrpcRouter(router, options) {
 			return { value: toJson(await target(input)) };
 		} catch (error) {
 			if (!isRefusal(error)) return { failed: error };
-			const details = detailsOf(error.cause);
+			const details = detailsOf(error);
 			return details === void 0 ? { refusal: error.message } : {
 				refusal: error.message,
 				details
@@ -866,18 +889,21 @@ function isRefusal(error) {
 	return error instanceof Error && error.name === "TRPCError" && hasKey(error, "code") && error.code !== "INTERNAL_SERVER_ERROR";
 }
 /**
-* The structured details of a refusal's cause: the input's issues when its
-* parser refused it, or the data the program gave as the cause, which tRPC
-* wraps in its `UnknownCauseError` (CLAUDE.md, Gotchas). A cause that is an
-* error of its own, a database's among them, gives none: its fields are the
-* failing system's, not the program's answer.
+* The structured details of a refusal, as data beside its sentence: the
+* cause's own `details` object (the convention a program's refusal follows,
+* such as `{ opties: [...] }`), and nothing else of the cause, since a cause
+* is whatever object the program attached; or, for tRPC's own input parse (a
+* `BAD_REQUEST` whose cause carries the parser's `issues` and no `details`),
+* those issues. Reading them never throws: a cause that cannot be read gives
+* none, and the refusal's sentence still reaches the agent.
 */
-function detailsOf(cause) {
-	if (hasKey(cause, "issues") && Array.isArray(cause.issues)) return { issues: toJson(cause.issues) };
-	if (cause instanceof Error && cause.constructor.name === "UnknownCauseError") {
-		const details = toJson(cause);
-		return isJsonObject(details) && Object.keys(details).length > 0 ? details : void 0;
-	}
+function detailsOf(error) {
+	try {
+		const cause = error.cause;
+		const details = hasKey(cause, "details") ? boundedJson(cause.details) : void 0;
+		if (isJsonObject(details)) return details;
+		if (error.code === "BAD_REQUEST" && !hasKey(cause, "details") && hasKey(cause, "issues") && Array.isArray(cause.issues)) return { issues: boundedJson(cause.issues) };
+	} catch {}
 }
 /** The narrowing every read of a tRPC internal goes through. */
 function hasKey(value, key) {

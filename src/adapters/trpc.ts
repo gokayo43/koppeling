@@ -9,7 +9,7 @@ import {
   type Note,
   type Outcome,
 } from "../catalogue";
-import { isJsonObject, toJson, type Json } from "../json";
+import { boundedJson, isJsonObject, toJson, type Json } from "../json";
 import { allOf, describeSchema, type Described } from "../schema";
 
 export interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
@@ -64,7 +64,7 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       return { value: toJson(answer) };
     } catch (error) {
       if (!isRefusal(error)) return { failed: error };
-      const details = detailsOf(error.cause);
+      const details = detailsOf(error);
       return details === undefined
         ? { refusal: error.message }
         : { refusal: error.message, details };
@@ -161,7 +161,7 @@ function procedureDefinitions(router: AnyTRPCRouter): [string, ProcedureDefiniti
  * class, so the door imports nothing from tRPC at run time.
  */
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever a procedure threw
-function isRefusal(error: unknown): error is Error {
+function isRefusal(error: unknown): error is Error & { readonly code: unknown } {
   return (
     error instanceof Error &&
     error.name === "TRPCError" &&
@@ -171,18 +171,29 @@ function isRefusal(error: unknown): error is Error {
 }
 
 /**
- * The structured details of a refusal's cause: the input's issues when its
- * parser refused it, or the data the program gave as the cause, which tRPC
- * wraps in its `UnknownCauseError` (CLAUDE.md, Gotchas). A cause that is an
- * error of its own, a database's among them, gives none: its fields are the
- * failing system's, not the program's answer.
+ * The structured details of a refusal, as data beside its sentence: the
+ * cause's own `details` object (the convention a program's refusal follows,
+ * such as `{ opties: [...] }`), and nothing else of the cause, since a cause
+ * is whatever object the program attached; or, for tRPC's own input parse (a
+ * `BAD_REQUEST` whose cause carries the parser's `issues` and no `details`),
+ * those issues. Reading them never throws: a cause that cannot be read gives
+ * none, and the refusal's sentence still reaches the agent.
  */
-function detailsOf(cause: unknown): Json | undefined {
-  if (hasKey(cause, "issues") && Array.isArray(cause.issues))
-    return { issues: toJson(cause.issues) };
-  if (cause instanceof Error && cause.constructor.name === "UnknownCauseError") {
-    const details = toJson(cause);
-    return isJsonObject(details) && Object.keys(details).length > 0 ? details : undefined;
+function detailsOf(error: Error & { readonly code: unknown }): Json | undefined {
+  try {
+    const cause = error.cause;
+    const details = hasKey(cause, "details") ? boundedJson(cause.details) : undefined;
+    if (isJsonObject(details)) return details;
+    if (
+      error.code === "BAD_REQUEST" &&
+      !hasKey(cause, "details") &&
+      hasKey(cause, "issues") &&
+      Array.isArray(cause.issues)
+    ) {
+      return { issues: boundedJson(cause.issues) };
+    }
+  } catch {
+    // A getter that throws, or a proxy that refuses to be read: no details.
   }
   return undefined;
 }

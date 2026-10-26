@@ -224,38 +224,133 @@ test("the router's own middleware chain runs for a call, with the context contex
   expect(seen).toEqual([{ person: 7 }]);
 });
 
-test("a refusal's structured details come back as data: the program's own cause, and the input's issues", async () => {
-  // The likeliest wrong carries any cause along, so a database error wrapped
-  // in a refusal would hand the agent its table and constraint names.
+test("a refusal's details are the cause's own details object, and nothing else of the cause", async () => {
+  // The likeliest wrong forwards every field of the cause, so whatever object
+  // a program attached, internal fields included, reaches the agent.
+  class Refusal extends Error {
+    readonly details: { readonly [key: string]: Json };
+    constructor(message: string, details: { readonly [key: string]: Json }) {
+      super(message);
+      this.details = details;
+    }
+  }
   const databaseError = Object.assign(new Error("duplicate key"), {
     table: "carriers",
-    constraint: "carriers_pkey",
+    details: "Key (name)=(ups) already exists.",
   });
   const router = t.router({
     carrier: t.procedure.input(z.object({ name: z.string() })).mutation(({ input }) => {
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `Onbekende vervoerder "${input.name}"`,
-        cause: { options: ["dhl", "postnl"] },
+        cause: { details: { opties: ["dhl", "postnl"] }, internal: "carrier-table-v2" },
       });
+    }),
+    shelf: t.procedure.mutation(() => {
+      throw new TRPCError({
+        code: "NOT_FOUND",
+        message: "Onbekende plank",
+        cause: new Refusal("Onbekende plank", { opties: ["A1", "B2"] }),
+      });
+    }),
+    bare: t.procedure.mutation(() => {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Nee", cause: { options: ["a"] } });
     }),
     duplicate: t.procedure.mutation(() => {
       throw new TRPCError({ code: "CONFLICT", message: "Bestaat al", cause: databaseError });
     }),
   });
+  const run = runner(router);
+
+  expect(await run("carrier", { name: "ups" })).toEqual({
+    refusal: 'Onbekende vervoerder "ups"',
+    details: { opties: ["dhl", "postnl"] },
+  });
+  expect(await run("shelf", undefined)).toEqual({
+    refusal: "Onbekende plank",
+    details: { opties: ["A1", "B2"] },
+  });
+  expect(await run("bare", undefined)).toEqual({ refusal: "Nee" });
+  expect(await run("duplicate", undefined)).toEqual({ refusal: "Bestaat al" });
+});
+
+test("an input's issues come back only from tRPC's own input parse, never from a program's refusal", async () => {
+  const router = t.router({
+    carrier: t.procedure.input(z.object({ name: z.string() })).mutation(() => 1),
+    conflict: t.procedure.mutation(() => {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: "Bestaat al",
+        cause: { issues: [{ message: "intern", path: ["secret"] }] },
+      });
+    }),
+    both: t.procedure.mutation(() => {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Nee",
+        cause: { issues: [{ message: "intern" }], details: { opties: ["a"] } },
+      });
+    }),
+  });
+  const run = runner(router);
+
+  expect(await run("carrier", { name: 7 })).toMatchObject({
+    details: { issues: [{ path: ["name"] }] },
+  });
+  expect(await run("conflict", undefined)).toEqual({ refusal: "Bestaat al" });
+  expect(await run("both", undefined)).toEqual({ refusal: "Nee", details: { opties: ["a"] } });
+});
+
+test("details that loop, nest errors or cannot be read are bounded, and the refusal still comes back", async () => {
+  interface Looping {
+    readonly opties: readonly string[];
+    self?: Looping;
+  }
+  interface Nested {
+    readonly below?: Nested;
+  }
+  const looping: Looping = { opties: ["a"] };
+  looping.self = looping;
+  let deep: Nested = {};
+  for (let level = 0; level < 50; level += 1) deep = { below: deep };
+  const unreadable = Object.defineProperty(new Error("kapot"), "details", {
+    get() {
+      throw new Error("getter failed");
+    },
+  });
+  const router = t.router({
+    looping: t.procedure.mutation(() => {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Lus", cause: { details: looping } });
+    }),
+    nested: t.procedure.mutation(() => {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Genest",
+        cause: { details: { reden: new Error("plank vol"), diep: deep } },
+      });
+    }),
+    unreadable: t.procedure.mutation(() => {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "Onleesbaar", cause: unreadable });
+    }),
+  });
+  const run = runner(router);
+
+  expect(await run("looping", undefined)).toEqual({
+    refusal: "Lus",
+    details: { opties: ["a"], self: null },
+  });
+  const nested = await run("nested", undefined);
+  expect(nested).toMatchObject({ refusal: "Genest", details: { reden: "plank vol" } });
+  expect(JSON.stringify(nested).split("below").length - 1).toBeLessThan(50);
+  expect(await run("unreadable", undefined)).toEqual({ refusal: "Onleesbaar" });
+});
+
+/** Runs a router's procedure by name, as nobody in particular. */
+function runner(router: AnyTRPCRouter) {
   const operations = fromTrpcRouter(router, { contextFor: () => ({}) }).operations;
-  const run = (name: string, input: Json | undefined) => {
+  return (name: string, input: Json | undefined) => {
     const found = operations.find((operation) => operation.name === name);
     if (found === undefined) throw new Error(`no ${name}`);
     return found.run(null, input, unaborted);
   };
-
-  expect(await run("carrier", { name: "ups" })).toEqual({
-    refusal: 'Onbekende vervoerder "ups"',
-    details: { options: ["dhl", "postnl"] },
-  });
-  expect(await run("carrier", { name: 7 })).toMatchObject({
-    details: { issues: [{ path: ["name"] }] },
-  });
-  expect(await run("duplicate", undefined)).toEqual({ refusal: "Bestaat al" });
-});
+}
