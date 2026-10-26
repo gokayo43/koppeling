@@ -107,11 +107,14 @@ test("the input composes the route's params, query and body, and the output is i
         type: "object",
         required: ["lookup_id"],
         properties: { lookup_id: { type: "string" } },
+        additionalProperties: false,
       },
+      query: { type: "object", additionalProperties: true, description: copy.undeclaredPart },
       body: {
         type: "object",
         required: ["option_index"],
         properties: { option_index: { type: "number" } },
+        additionalProperties: false,
       },
     },
     required: ["params", "body"],
@@ -128,6 +131,34 @@ test("the input composes the route's params, query and body, and the output is i
   });
   expect(operation("orders.post").input).toMatchObject({
     properties: { body: { anyOf: [{ type: "object" }, {}] } },
+  });
+  expect(operation("orders.post").input["properties"]).not.toHaveProperty(
+    "body.unevaluatedProperties",
+  );
+});
+
+test("a part the route declares no schema for is shown open and not required, a body only where the method carries one", () => {
+  // The likeliest wrong shape closes every part: a handler that reads a query
+  // or a body it never declared would then be refused what it reads.
+  const app = new Elysia().get("/api/v1/tree", () => 1).post("/api/v1/notes", () => 1);
+  const [notes, tree] = fromElysia(app, { credential, mount: "/api/v1" }).operations;
+
+  expect(tree?.input).toEqual({
+    type: "object",
+    properties: {
+      query: { type: "object", additionalProperties: true, description: copy.undeclaredPart },
+    },
+    required: [],
+    additionalProperties: false,
+  });
+  expect(notes?.input).toEqual({
+    type: "object",
+    properties: {
+      query: { type: "object", additionalProperties: true, description: copy.undeclaredPart },
+      body: { description: copy.undeclaredPart },
+    },
+    required: [],
+    additionalProperties: false,
   });
 });
 
@@ -286,7 +317,7 @@ test("a path parameter that is empty, '.' or '..' is refused, so a call never re
     .post("/outside", () => ran.push("POST /outside"))
     .post("/api/v1/admin/refund", () => ran.push("POST /api/v1/admin/refund"))
     .post("/api/v1/orders/:a/:b/refund", () => ran.push("POST /api/v1/orders/:a/:b/refund"));
-  const [refund] = fromElysia(app, { credential, mount: "/api/v1" }).operations.filter(
+  const refund = fromElysia(app, { credential, mount: "/api/v1" }).operations.find(
     ({ name }) => name === "orders.a.b.refund.post",
   );
   for (const params of [

@@ -2,6 +2,7 @@ import { Data, Duration, Effect } from "effect";
 import type { JWTPayload } from "jose";
 
 import type { Kind, Outcome } from "./catalogue";
+import { strayKeys } from "./closed";
 import { copy } from "./copy";
 import { neighbours, type Directory } from "./directory";
 import { writeEvent, type Report, type WriteOutcome } from "./events";
@@ -28,7 +29,12 @@ export interface Answer {
   readonly isError?: true;
 }
 
-export const refusal = (text: string): Answer => ({ text, isError: true });
+/** A tool error: the sentence, and beside it as data whatever details came with it. */
+export const refusal = (text: string, details?: Json): Answer => ({
+  text,
+  isError: true,
+  ...(details === undefined ? {} : { structured: { refusal: text, details } }),
+});
 
 /** The refusal for a name no operation has: the names it most likely meant, or the areas. */
 export function unknownOperation(directory: Directory<never>, name: string): Answer {
@@ -67,6 +73,15 @@ export function call<Actor>(
   const operation = session.directory.byName.get(name);
   if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
   if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
+  const strays = strayKeys(operation.input, input);
+  if (strays.length) {
+    return Effect.succeed(
+      refusal(
+        copy.strayKeys(strays),
+        strays.map(({ at, unknown, allowed }) => ({ at, unknown, allowed })),
+      ),
+    );
+  }
   const write = operation.kind === "write";
   const failed = (cause: unknown, reached: boolean) =>
     session

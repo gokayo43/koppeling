@@ -2,6 +2,247 @@ import { Cause, Data, Duration, Effect, JSONSchema, Schema } from "effect";
 import * as AST from "effect/SchemaAST";
 import { McpServer, WebStandardStreamableHTTPServerTransport, createMcpHandler, fromJsonSchema, getOAuthProtectedResourceMetadataUrl, isLegacyRequest } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, errors, jwtVerify } from "jose";
+//#region src/json.ts
+function isJsonObject(value) {
+	return typeof value === "object" && value !== null && !isJsonArray(value);
+}
+function isJsonArray(value) {
+	return Array.isArray(value);
+}
+/**
+* The JSON a program's own value becomes, as `JSON.stringify` would write it,
+* except that a `bigint` becomes its decimal string and a `Map` or `Set` keeps
+* its entries: a tRPC program on superjson returns all three, and
+* `JSON.stringify` throws on the first and writes `{}` for the other two.
+*/
+function toJson(value) {
+	if (typeof value === "string" || typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value + 0 : null;
+	if (typeof value === "bigint") return value.toString();
+	if (typeof value === "object" && value !== null) return objectToJson(value);
+	return null;
+}
+function objectToJson(value) {
+	if (Array.isArray(value)) return value.map((item) => toJson(item));
+	if (value instanceof Map) return Object.fromEntries(Array.from(value, ([key, item]) => [String(key), toJson(item)]));
+	if (value instanceof Set) return Array.from(value, (item) => toJson(item));
+	if ("toJSON" in value && typeof value.toJSON === "function") return toJson(value.toJSON());
+	const entries = [];
+	for (const [key, item] of Object.entries(value)) {
+		const kind = typeof item;
+		if (kind !== "undefined" && kind !== "function" && kind !== "symbol") entries.push([key, toJson(item)]);
+	}
+	return Object.fromEntries(entries);
+}
+//#endregion
+//#region src/closed.ts
+/**
+* Closed inputs: the input schema the door shows names every key an object
+* may carry, and a call whose input carries any other key is refused before
+* the program runs. A program's own validator drops such a key without a word
+* (zod's default object, Effect's `onExcessProperty: "ignore"`, Elysia's
+* `normalize`), so a misspelled filter would otherwise be answered as if it
+* had not been asked.
+*
+* An object the program declares open stays open: a record (`additionalProperties`
+* as a schema, `patternProperties`), an object that allows more
+* (`additionalProperties: true` or `{}`), and an alternative that takes
+* anything (`{}`). Only an object that names its keys (`properties`) is closed.
+*/
+const COMBINATORS = [
+	"allOf",
+	"anyOf",
+	"oneOf"
+];
+/** Where a schema keeps the schemas of the values below it. */
+const BY_KEY = [
+	"properties",
+	"patternProperties",
+	"$defs",
+	"definitions"
+];
+const SINGLE = ["items", "additionalProperties"];
+/** Keys that describe a schema without restricting what it takes. */
+const ANNOTATIONS = /* @__PURE__ */ new Set([
+	"title",
+	"description",
+	"$comment",
+	"default",
+	"examples"
+]);
+/**
+* `schema` with every object that names its keys closed: by
+* `additionalProperties: false`, or, where its keys come from `allOf`,
+* `anyOf`, `oneOf` or `$ref` as well, by `unevaluatedProperties: false`, which
+* JSON Schema evaluates across them (closing each part would refuse its
+* siblings' keys).
+*/
+function closed(schema) {
+	return close(schema, false);
+}
+/** `part`: the schema is one of a combination's parts, which the combination closes. */
+function close(schema, part) {
+	const below = [];
+	for (const key of BY_KEY) {
+		const map = schema[key];
+		if (isJsonObject(map)) below.push([key, Object.fromEntries(Object.entries(map).map(([name, child]) => [name, closeAny(child, false)]))]);
+	}
+	for (const key of SINGLE) {
+		const child = schema[key];
+		if (isJsonObject(child)) below.push([key, close(child, false)]);
+	}
+	const prefix = schema["prefixItems"];
+	if (isJsonArray(prefix)) below.push(["prefixItems", prefix.map((child) => closeAny(child, false))]);
+	for (const key of COMBINATORS) {
+		const parts = schema[key];
+		if (isJsonArray(parts)) below.push([key, parts.map((child) => closeAny(child, true))]);
+	}
+	const rewritten = {
+		...schema,
+		...Object.fromEntries(below)
+	};
+	if (part || !namesKeys(schema) || declaresOpenness(schema) || hasOpenPart(schema)) return rewritten;
+	const combined = COMBINATORS.some((key) => isJsonArray(schema[key])) || "$ref" in schema;
+	return {
+		...rewritten,
+		[combined ? "unevaluatedProperties" : "additionalProperties"]: false
+	};
+}
+const closeAny = (child, part) => isJsonObject(child) ? close(child, part) : child;
+/** Whether a schema names an object's keys, itself or through a combination's parts. */
+function namesKeys(schema) {
+	return isJsonObject(schema["properties"]) || COMBINATORS.some((key) => partsOf(schema, key).some(namesKeys));
+}
+/** Whether the schema says itself which keys beyond its own an object may carry. */
+function declaresOpenness(schema) {
+	return "additionalProperties" in schema || "patternProperties" in schema || "unevaluatedProperties" in schema;
+}
+/**
+* Whether a combination's part takes keys the combination does not name: a
+* part that is open, or an alternative that takes anything at all.
+*/
+function hasOpenPart(schema) {
+	return COMBINATORS.some((key) => partsOf(schema, key).some((part) => isOpen(part) || key !== "allOf" && Object.keys(part).every((name) => ANNOTATIONS.has(name))));
+}
+function partsOf(schema, key) {
+	const parts = schema[key];
+	return isJsonArray(parts) ? parts.filter(isJsonObject) : [];
+}
+/** A schema that lets an object carry keys it does not name. */
+function isOpen(schema) {
+	const more = schema["additionalProperties"];
+	const unevaluated = schema["unevaluatedProperties"];
+	return more !== void 0 && more !== false || unevaluated !== void 0 && unevaluated !== false || "patternProperties" in schema || hasOpenPart(schema);
+}
+/**
+* Every place in `value` where an object carries a key the closed `schema`
+* does not name there, outermost first. Where a combination's parts disagree
+* the keys of all of them are allowed, so a refusal is never wrong; a `$ref`
+* the door cannot resolve allows any key.
+*/
+function strayKeys(schema, value) {
+	if (value === void 0) return [];
+	const strays = [];
+	visit([{
+		schema,
+		scope: [schema]
+	}], value, "input", strays);
+	return strays;
+}
+function visit(met, value, at, strays) {
+	const here = met.flatMap((entry) => expand(entry));
+	if (isJsonArray(value)) {
+		value.forEach((item, index) => {
+			const below = here.flatMap(({ schema, scope }) => {
+				const prefix = schema["prefixItems"];
+				const positional = isJsonArray(prefix) ? prefix[index] : void 0;
+				const child = isJsonObject(positional) ? positional : schema["items"];
+				return isJsonObject(child) ? [{
+					schema: child,
+					scope
+				}] : [];
+			});
+			if (below.length) visit(below, item, `${at}[${index}]`, strays);
+		});
+		return;
+	}
+	if (!isJsonObject(value)) return;
+	const allowed = new Set(here.flatMap(({ schema }) => Object.keys(propertiesOf(schema))));
+	const isClosed = here.some(({ schema }) => schema["additionalProperties"] === false || schema["unevaluatedProperties"] === false) && !here.some(({ schema }) => isOpen(schema));
+	const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+	if (isClosed && unknown.length) strays.push({
+		at,
+		unknown,
+		allowed: [...allowed]
+	});
+	for (const [key, item] of Object.entries(value)) {
+		const below = here.flatMap(({ schema, scope }) => childSchemas(schema, key).map((child) => ({
+			schema: child,
+			scope
+		})));
+		if (below.length) visit(below, item, `${at}.${key}`, strays);
+	}
+}
+/** The schemas a key's value meets under `schema`: its property, or what a record gives every key. */
+function childSchemas(schema, key) {
+	const own = propertiesOf(schema)[key];
+	if (own !== void 0) return isJsonObject(own) ? [own] : [];
+	const patterns = schema["patternProperties"];
+	const matching = isJsonObject(patterns) ? Object.entries(patterns).flatMap(([pattern, child]) => isJsonObject(child) && matches(pattern, key) ? [child] : []) : [];
+	const more = schema["additionalProperties"];
+	return matching.length ? matching : isJsonObject(more) ? [more] : [];
+}
+function matches(pattern, key) {
+	try {
+		return new RegExp(pattern, "u").test(key);
+	} catch {
+		return true;
+	}
+}
+function propertiesOf(schema) {
+	const properties = schema["properties"];
+	return isJsonObject(properties) ? properties : {};
+}
+/**
+* The schemas that apply at one place: the schema itself, its combinations'
+* parts and what its `$ref` points to, each followed once.
+*/
+function expand(met, seen = /* @__PURE__ */ new Set()) {
+	if (seen.has(met.schema)) return [];
+	const visited = new Set(seen).add(met.schema);
+	const scope = holdsDefinitions(met.schema) ? [met.schema, ...met.scope] : met.scope;
+	const own = {
+		schema: met.schema,
+		scope
+	};
+	const parts = COMBINATORS.flatMap((key) => partsOf(met.schema, key)).map((schema) => ({
+		schema,
+		scope
+	}));
+	const target = resolve(met.schema["$ref"], scope);
+	const referred = target === void 0 ? [] : [{
+		schema: target,
+		scope
+	}];
+	return [own, ...[...parts, ...referred].flatMap((next) => expand(next, visited))];
+}
+const holdsDefinitions = (schema) => "$defs" in schema || "definitions" in schema;
+/**
+* A local `$ref` (`#/$defs/Name`, `#/definitions/Name`, or any pointer below
+* them) against the nearest schema around it that holds it. The door builds
+* one input schema out of several documents, so `#` is the document a part
+* came from, which is the nearest one holding definitions.
+*/
+function resolve(reference, scope) {
+	if (typeof reference !== "string" || !reference.startsWith("#/")) return void 0;
+	const path = reference.slice(2).split("/").map((segment) => decodeURIComponent(segment).replaceAll("~1", "/").replaceAll("~0", "~"));
+	for (const root of scope) {
+		let node = root;
+		for (const segment of path) node = isJsonObject(node) ? node[segment] : void 0;
+		if (isJsonObject(node)) return node;
+	}
+}
+//#endregion
 //#region src/copy.ts
 /**
 * Every sentence the door writes that a person may read, in Dutch as the
@@ -60,6 +301,8 @@ const copy = {
 	wrongTool: (name, kind) => `"${name}" is een operatie van soort ${kind}: voer haar uit met het gereedschap ${kind}.`,
 	tooManyWords: (most) => `Zoek met hooguit ${most} verschillende woorden.`,
 	undescribedSchema: "Het programma beschrijft deze waarde in een vorm die de koppeling niet als JSON Schema kan schrijven; het programma controleert haar zelf bij read of write.",
+	strayKeys: (strays) => strays.map(({ at, unknown, allowed }) => `${at} kent ${unknown.length === 1 ? "het veld" : "de velden"} ${quoted(unknown)} niet; ${allowed.length ? `toegestaan zijn: ${quoted(allowed)}` : "daar hoort geen veld"}.`).join(" ") + " Er is niets uitgevoerd.",
+	undeclaredPart: "Het programma beschrijft dit deel niet: de koppeling geeft het door zoals het is, en het programma controleert het zelf.",
 	inputNotObject: "De invoer moet een object zijn, met params, query en body zoals het invoerschema ze noemt.",
 	missingPathParameter: (name) => `De invoer mist params.${name}, dat in het pad staat.`,
 	routedElsewhere: (names) => `Met deze waarde voor ${names.map((name) => `params.${name}`).join(" en ")} komt de vraag bij een andere operatie uit; kies een andere waarde.`,
@@ -103,7 +346,7 @@ function catalogue(declared, skipped) {
 	return {
 		operations: declared.map((operation) => ({
 			...operation,
-			input: schemaOf(operation.name, "input", operation.input),
+			input: closed(schemaOf(operation.name, "input", operation.input)),
 			output: operation.output === void 0 ? void 0 : schemaOf(operation.name, "output", operation.output)
 		})).toSorted(byName),
 		skipped: skipped.toSorted(byName),
@@ -114,39 +357,6 @@ function catalogue(declared, skipped) {
 function firstSegment(name) {
 	const dot = name.indexOf(".");
 	return dot === -1 ? name : name.slice(0, dot);
-}
-//#endregion
-//#region src/json.ts
-function isJsonObject(value) {
-	return typeof value === "object" && value !== null && !isJsonArray(value);
-}
-function isJsonArray(value) {
-	return Array.isArray(value);
-}
-/**
-* The JSON a program's own value becomes, as `JSON.stringify` would write it,
-* except that a `bigint` becomes its decimal string and a `Map` or `Set` keeps
-* its entries: a tRPC program on superjson returns all three, and
-* `JSON.stringify` throws on the first and writes `{}` for the other two.
-*/
-function toJson(value) {
-	if (typeof value === "string" || typeof value === "boolean") return value;
-	if (typeof value === "number") return Number.isFinite(value) ? value + 0 : null;
-	if (typeof value === "bigint") return value.toString();
-	if (typeof value === "object" && value !== null) return objectToJson(value);
-	return null;
-}
-function objectToJson(value) {
-	if (Array.isArray(value)) return value.map((item) => toJson(item));
-	if (value instanceof Map) return Object.fromEntries(Array.from(value, ([key, item]) => [String(key), toJson(item)]));
-	if (value instanceof Set) return Array.from(value, (item) => toJson(item));
-	if ("toJSON" in value && typeof value.toJSON === "function") return toJson(value.toJSON());
-	const entries = [];
-	for (const [key, item] of Object.entries(value)) {
-		const kind = typeof item;
-		if (kind !== "undefined" && kind !== "function" && kind !== "symbol") entries.push([key, toJson(item)]);
-	}
-	return Object.fromEntries(entries);
 }
 //#endregion
 //#region src/schema.ts
@@ -274,16 +484,16 @@ function fromElysia(app, options) {
 			continue;
 		}
 		const owner = `Elysia route ${route.method} ${route.path}`;
+		const method = route.method;
 		const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
 		schemas.set("params", schemas.get("params") ?? pathParameters(segments));
-		const method = route.method;
 		const own = ownStore(app, route.method, route.path, owner);
 		declared.push({
 			name,
 			area: options.area?.(named) ?? firstSegment(name),
 			kind: method === "GET" || method === "HEAD" ? "read" : "write",
 			description: description(hooks),
-			input: inputSchema(schemas),
+			input: inputSchema(schemas, carriesBody(method)),
 			output: responseSchema(app, hooks, owner),
 			run: (actor, input, signal) => request(app, {
 				app,
@@ -318,21 +528,47 @@ function pathParameters(segments) {
 function parameterName(segment) {
 	return segment.slice(1).replace(/\?$/, "");
 }
-/** The route's parts as one object: `{ params, query, body }`, each as the route declares it. */
-function inputSchema(schemas) {
+const carriesBody = (method) => method !== "GET" && method !== "HEAD";
+/**
+* A part the route declares no schema for, which its handler may still read:
+* the door passes it on as it is, so it shows it open. An undeclared query is
+* an object of any keys; an undeclared body any value.
+*/
+const UNDECLARED = {
+	query: {
+		type: "object",
+		additionalProperties: true,
+		description: copy.undeclaredPart
+	},
+	body: { description: copy.undeclaredPart }
+};
+/**
+* The route's parts as one object: `{ params, query, body }`, each as the
+* route declares it, and a query, and a body where the method carries one,
+* open where it declares none.
+*/
+function inputSchema(schemas, withBody) {
 	const present = [];
+	const required = [];
 	const reasons = [];
 	for (const part of PARTS) {
 		const described = schemas.get(part);
-		if (described === void 0) continue;
-		if ("schema" in described) present.push([part, described.schema]);
-		else reasons.push(`${part}: ${described.undescribable}`);
+		if (described === void 0) {
+			if (part === "query" || part === "body" && withBody) present.push([part, UNDECLARED[part]]);
+			continue;
+		}
+		if ("undescribable" in described) {
+			reasons.push(`${part}: ${described.undescribable}`);
+			continue;
+		}
+		present.push([part, described.schema]);
+		if (part !== "query" || requires(described.schema)) required.push(part);
 	}
 	if (reasons.length) return { undescribable: reasons.join("; ") };
 	return { schema: {
 		type: "object",
 		properties: Object.fromEntries(present),
-		required: present.filter(([part, schema]) => part !== "query" || requires(schema)).map(([part]) => part),
+		required,
 		additionalProperties: false
 	} };
 }
@@ -423,13 +659,13 @@ async function request(app, target, input, signal) {
 	if ("refusal" in url) return url;
 	const headers = new Headers(target.headers);
 	const body = parts["body"];
-	const carriesBody = body !== void 0 && target.method !== "GET" && target.method !== "HEAD";
-	if (carriesBody) headers.set("content-type", "application/json");
+	const sendsBody = body !== void 0 && carriesBody(target.method);
+	if (sendsBody) headers.set("content-type", "application/json");
 	const response = await app.handle(new Request(url.href, {
 		method: target.method,
 		headers,
 		signal,
-		...carriesBody ? { body: JSON.stringify(body) } : {}
+		...sendsBody ? { body: JSON.stringify(body) } : {}
 	}));
 	try {
 		const text = await bodyOf(response, signal);
@@ -897,9 +1133,14 @@ function writeEvent(operation, claims, outcome) {
 * the agent waiting on it, open without end.
 */
 const OPERATION_TIME_LIMIT = Duration.seconds(60);
-const refusal = (text) => ({
+/** A tool error: the sentence, and beside it as data whatever details came with it. */
+const refusal = (text, details) => ({
 	text,
-	isError: true
+	isError: true,
+	...details === void 0 ? {} : { structured: {
+		refusal: text,
+		details
+	} }
 });
 /** The refusal for a name no operation has: the names it most likely meant, or the areas. */
 function unknownOperation(directory, name) {
@@ -924,6 +1165,12 @@ function call(session, tool, name, input) {
 	const operation = session.directory.byName.get(name);
 	if (operation === void 0) return Effect.succeed(unknownOperation(session.directory, name));
 	if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
+	const strays = strayKeys(operation.input, input);
+	if (strays.length) return Effect.succeed(refusal(copy.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
+		at,
+		unknown,
+		allowed
+	}))));
 	const write = operation.kind === "write";
 	const failed = (cause, reached) => session.report({
 		kind: "failure",

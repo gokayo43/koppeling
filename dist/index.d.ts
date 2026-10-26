@@ -33,6 +33,7 @@ interface Operation<Actor> {
   readonly area: string;
   readonly kind: Kind;
   readonly description: string | undefined;
+  /** Every object that names its keys is closed: a call carrying any other key is refused. */
   readonly input: JsonSchema;
   readonly output: JsonSchema | undefined;
   /**

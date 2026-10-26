@@ -1,3 +1,4 @@
+import { closed } from "./closed";
 import { copy } from "./copy";
 import type { Json, JsonSchema } from "./json";
 import type { Described } from "./schema";
@@ -22,6 +23,7 @@ export interface Operation<Actor> {
   readonly area: string;
   readonly kind: Kind;
   readonly description: string | undefined;
+  /** Every object that names its keys is closed: a call carrying any other key is refused. */
   readonly input: JsonSchema;
   readonly output: JsonSchema | undefined;
   /**
@@ -94,7 +96,7 @@ export function catalogue<Actor>(
   const operations = declared
     .map((operation) => ({
       ...operation,
-      input: schemaOf(operation.name, "input", operation.input),
+      input: closed(schemaOf(operation.name, "input", operation.input)),
       output:
         operation.output === undefined
           ? undefined

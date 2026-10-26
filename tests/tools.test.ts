@@ -196,6 +196,53 @@ test("an input the program's schema rejects answers a tool error carrying the sc
   expect(textOf(result)).toBe('Expected number, actual "1001"');
 });
 
+test("a misnamed field is refused before the program runs, naming the unknown keys and the allowed ones there", async () => {
+  // The program's own validator drops an unknown key without a word, so
+  // "statsu" was answered as if no status had been asked for.
+  await using door = await warehouse();
+  const misnamed = await door.client.callTool({
+    name: "read",
+    arguments: { name: "orders.list", input: { statsu: "processing" } },
+  });
+
+  expect(misnamed.isError).toBe(true);
+  expect(door.invoked).toEqual([]);
+  const strays = [{ at: "input", unknown: ["statsu"], allowed: ["status", "page"] }];
+  expect(textOf(misnamed)).toBe(copy.strayKeys(strays));
+  expect(misnamed.structuredContent).toEqual({ refusal: copy.strayKeys(strays), details: strays });
+
+  const correct = await door.client.callTool({
+    name: "read",
+    arguments: { name: "orders.list", input: { status: "processing" } },
+  });
+  expect(correct.isError).toBeFalsy();
+  expect(door.invoked).toEqual(["orders.list"]);
+});
+
+test("a misnamed query field on an Elysia route is refused at its part, and a correct one passes", async () => {
+  const invoked: string[] = [];
+  await using door = await connected(
+    apiDirectory((route) => invoked.push(route)),
+    apiCaller,
+  );
+  const misnamed = await door.client.callTool({
+    name: "read",
+    arguments: { name: "products.get", input: { query: { serach: "rem" } } },
+  });
+
+  expect(misnamed.isError).toBe(true);
+  expect(invoked).toEqual([]);
+  expect(textOf(misnamed)).toBe(
+    copy.strayKeys([{ at: "input.query", unknown: ["serach"], allowed: ["search", "page"] }]),
+  );
+  const correct = await door.client.callTool({
+    name: "read",
+    arguments: { name: "products.get", input: { query: { search: "rem" } } },
+  });
+  expect(correct.structuredContent).toEqual({ result: { data: [] } });
+  expect(invoked).toEqual(["/api/v1/products/"]);
+});
+
 test("a program's own refusal answers a tool error with the program's sentence, and its guard ran", async () => {
   await using door = await warehouse(warehousePicker);
   const result = await door.client.callTool({

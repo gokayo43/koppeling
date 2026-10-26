@@ -77,6 +77,17 @@ export const copy = {
   tooManyWords: (most: number) => `Zoek met hooguit ${most} verschillende woorden.`,
   undescribedSchema:
     "Het programma beschrijft deze waarde in een vorm die de koppeling niet als JSON Schema kan schrijven; het programma controleert haar zelf bij read of write.",
+  strayKeys: (
+    strays: readonly { at: string; unknown: readonly string[]; allowed: readonly string[] }[],
+  ) =>
+    strays
+      .map(
+        ({ at, unknown, allowed }) =>
+          `${at} kent ${unknown.length === 1 ? "het veld" : "de velden"} ${quoted(unknown)} niet; ${allowed.length ? `toegestaan zijn: ${quoted(allowed)}` : "daar hoort geen veld"}.`,
+      )
+      .join(" ") + " Er is niets uitgevoerd.",
+  undeclaredPart:
+    "Het programma beschrijft dit deel niet: de koppeling geeft het door zoals het is, en het programma controleert het zelf.",
   inputNotObject:
     "De invoer moet een object zijn, met params, query en body zoals het invoerschema ze noemt.",
   missingPathParameter: (name: string) => `De invoer mist params.${name}, dat in het pad staat.`,
