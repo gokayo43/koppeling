@@ -80,6 +80,8 @@ export const copy = {
   inputNotObject:
     "De invoer moet een object zijn, met params, query en body zoals het invoerschema ze noemt.",
   missingPathParameter: (name: string) => `De invoer mist params.${name}, dat in het pad staat.`,
+  reservedPathParameter: (name: string, value: string) =>
+    `params.${name} mag niet "${value}" zijn: met die waarde komt de vraag bij een andere operatie uit.`,
   badPathParameter: (name: string) =>
     `params.${name} staat in het pad en mag niet leeg, "." of ".." zijn.`,
   noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",

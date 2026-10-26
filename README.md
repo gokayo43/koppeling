@@ -174,7 +174,10 @@ validation error: Invalid arguments for tool find: …"). That is accepted.
   is given up on, with a sentence saying so; for a write, that the change may
   have been made.
 - A path parameter that is empty, `.` or `..` is refused before the program is
-  asked: a URL resolves those, and the call would reach another route.
+  asked: a URL resolves those, and the call would reach another route. So is a
+  value that a sibling route spells as a static segment at that place
+  (`orders.id.get` with `id: "export"` beside `GET /orders/export`), since
+  Elysia's router prefers the static route.
 - The operation runs at most once per call. The door retries nothing.
 
 ## Sign-in
