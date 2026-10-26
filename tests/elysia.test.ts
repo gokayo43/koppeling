@@ -302,6 +302,36 @@ test("a path parameter that is empty, '.' or '..' is refused, so a call never re
   expect(ran).toEqual(["POST /api/v1/orders/:a/:b/refund"]);
 });
 
+test("a path parameter equal to a static sibling route's segment is refused, so that route never runs", async () => {
+  const ran: string[] = [];
+  const app = new Elysia()
+    .get("/api/v1/orders/:id", ({ params }) => {
+      ran.push(`order ${params.id}`);
+      return params.id;
+    })
+    .get(
+      "/api/v1/orders/export",
+      () => {
+        ran.push("export");
+        return "every order";
+      },
+      { detail: { koppeling: false } },
+    );
+  const [order] = fromElysia(app, { credential, mount: "/api/v1" }).operations;
+
+  expect(order?.name).toBe("orders.id.get");
+  expect(await order?.run(apiCaller, { params: { id: "export" } }, unaborted)).toHaveProperty(
+    "refusal",
+  );
+  expect(await order?.run(apiCaller, { params: { id: "exports" } }, unaborted)).toEqual({
+    value: "exports",
+  });
+  expect(await order?.run(apiCaller, { params: { id: "export2" } }, unaborted)).toEqual({
+    value: "export2",
+  });
+  expect(ran).toEqual(["order exports", "order export2"]);
+});
+
 test("a route the program withholds from the door is skipped and named, apart from hidden ones", () => {
   const app = new Elysia({ prefix: "/api" })
     .post("/tokens", () => 1, { detail: { koppeling: false } })

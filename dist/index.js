@@ -62,6 +62,7 @@ const copy = {
 	undescribedSchema: "Het programma beschrijft deze waarde in een vorm die de koppeling niet als JSON Schema kan schrijven; het programma controleert haar zelf bij read of write.",
 	inputNotObject: "De invoer moet een object zijn, met params, query en body zoals het invoerschema ze noemt.",
 	missingPathParameter: (name) => `De invoer mist params.${name}, dat in het pad staat.`,
+	reservedPathParameter: (name, value) => `params.${name} mag niet "${value}" zijn: met die waarde komt de vraag bij een andere operatie uit.`,
 	badPathParameter: (name) => `params.${name} staat in het pad en mag niet leeg, "." of ".." zijn.`,
 	noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",
 	badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
@@ -276,6 +277,7 @@ function fromElysia(app, options) {
 		const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
 		schemas.set("params", schemas.get("params") ?? pathParameters(segments));
 		const method = route.method;
+		const reserved = reservedValues(app.routes, route);
 		declared.push({
 			name,
 			area: options.area?.(named) ?? firstSegment(name),
@@ -286,6 +288,7 @@ function fromElysia(app, options) {
 			run: (actor, input, signal) => request(app, {
 				method,
 				path: route.path,
+				reserved,
 				headers: options.credential(actor)
 			}, input, signal)
 		});
@@ -368,10 +371,36 @@ function description(hooks) {
 	const lines = [field(detail, "summary"), field(detail, "description")].filter((text) => typeof text === "string").map((text) => text.trim()).filter(Boolean);
 	return lines.length ? lines.join("\n") : void 0;
 }
+const isParameter = (segment) => segment.startsWith(":") || segment === "*";
+/**
+* For each of a route's path parameters, the values its sibling routes spell
+* as a static segment at that position. Elysia's router prefers a static
+* segment to a parameter, so a call with such a value would run the sibling
+* (perhaps withheld, hidden or guarded otherwise) under this operation's name.
+* A sibling answers the same method, has as many segments, and agrees with
+* this route wherever both are static.
+*/
+function reservedValues(routes, route) {
+	const own = route.path.split("/");
+	const reserved = /* @__PURE__ */ new Map();
+	for (const sibling of routes) {
+		if (sibling.method !== route.method && sibling.method !== "ALL") continue;
+		const theirs = sibling.path.split("/");
+		if (theirs.length !== own.length) continue;
+		if (!own.every((segment, index) => isParameter(segment) || isParameter(theirs[index] ?? "") || segment === theirs[index])) continue;
+		own.forEach((segment, index) => {
+			const value = theirs[index] ?? "";
+			if (!segment.startsWith(":") || isParameter(value)) return;
+			const name = parameterName(segment);
+			reserved.set(name, (reserved.get(name) ?? /* @__PURE__ */ new Set()).add(value));
+		});
+	}
+	return reserved;
+}
 async function request(app, target, input, signal) {
 	const parts = input === void 0 ? {} : input;
 	if (!isJsonObject(parts)) return { refusal: copy.inputNotObject };
-	const url = urlOf(target.path, parts["params"], parts["query"]);
+	const url = urlOf(target, parts["params"], parts["query"]);
 	if ("refusal" in url) return url;
 	const headers = new Headers(target.headers);
 	const body = parts["body"];
@@ -414,10 +443,10 @@ async function bodyOf(response, signal) {
 		signal.removeEventListener("abort", cancel);
 	}
 }
-function urlOf(path, params, query) {
+function urlOf(target, params, query) {
 	const given = isJsonObject(params) ? params : {};
 	const segments = [];
-	for (const segment of path.split("/")) {
+	for (const segment of target.path.split("/")) {
 		if (!segment.startsWith(":")) {
 			segments.push(segment);
 			continue;
@@ -430,6 +459,7 @@ function urlOf(path, params, query) {
 		}
 		const encoded = encodeURIComponent(textOf(value));
 		if (encoded === "" || encoded === "." || encoded === "..") return { refusal: copy.badPathParameter(name) };
+		if (target.reserved.get(name)?.has(encoded)) return { refusal: copy.reservedPathParameter(name, encoded) };
 		segments.push(encoded);
 	}
 	const search = new URLSearchParams();

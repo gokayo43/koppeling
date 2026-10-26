@@ -88,6 +88,7 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
     const schemas = new Map(PARTS.map((part) => [part, partSchema(app, hooks, part, owner)]));
     schemas.set("params", schemas.get("params") ?? pathParameters(segments));
     const method = route.method;
+    const reserved = reservedValues(app.routes, route);
     declared.push({
       name,
       area: options.area?.(named) ?? firstSegment(name),
@@ -98,7 +99,7 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       run: (actor, input, signal) =>
         request(
           app,
-          { method, path: route.path, headers: options.credential(actor) },
+          { method, path: route.path, reserved, headers: options.credential(actor) },
           input,
           signal,
         ),
@@ -238,7 +239,44 @@ function description(
 interface Target {
   readonly method: string;
   readonly path: string;
+  /** Per path parameter, the values that would reach a static sibling route instead. */
+  readonly reserved: ReadonlyMap<string, ReadonlySet<string>>;
   readonly headers: { readonly [header: string]: string };
+}
+
+const isParameter = (segment: string) => segment.startsWith(":") || segment === "*";
+
+/**
+ * For each of a route's path parameters, the values its sibling routes spell
+ * as a static segment at that position. Elysia's router prefers a static
+ * segment to a parameter, so a call with such a value would run the sibling
+ * (perhaps withheld, hidden or guarded otherwise) under this operation's name.
+ * A sibling answers the same method, has as many segments, and agrees with
+ * this route wherever both are static.
+ */
+function reservedValues(
+  routes: readonly { readonly method: string; readonly path: string }[],
+  route: { readonly method: string; readonly path: string },
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const own = route.path.split("/");
+  const reserved = new Map<string, Set<string>>();
+  for (const sibling of routes) {
+    if (sibling.method !== route.method && sibling.method !== "ALL") continue;
+    const theirs = sibling.path.split("/");
+    if (theirs.length !== own.length) continue;
+    const agrees = own.every(
+      (segment, index) =>
+        isParameter(segment) || isParameter(theirs[index] ?? "") || segment === theirs[index],
+    );
+    if (!agrees) continue;
+    own.forEach((segment, index) => {
+      const value = theirs[index] ?? "";
+      if (!segment.startsWith(":") || isParameter(value)) return;
+      const name = parameterName(segment);
+      reserved.set(name, (reserved.get(name) ?? new Set()).add(value));
+    });
+  }
+  return reserved;
 }
 
 async function request(
@@ -249,7 +287,7 @@ async function request(
 ): Promise<Outcome> {
   const parts = input === undefined ? {} : input;
   if (!isJsonObject(parts)) return { refusal: copy.inputNotObject };
-  const url = urlOf(target.path, parts["params"], parts["query"]);
+  const url = urlOf(target, parts["params"], parts["query"]);
   if ("refusal" in url) return url;
   const headers = new Headers(target.headers);
   const body = parts["body"];
@@ -303,13 +341,13 @@ async function bodyOf(response: Response, signal: AbortSignal): Promise<string> 
 }
 
 function urlOf(
-  path: string,
+  target: Target,
   params: Json | undefined,
   query: Json | undefined,
 ): { readonly href: string } | { readonly refusal: string } {
   const given: JsonObject = isJsonObject(params) ? params : {};
   const segments: string[] = [];
-  for (const segment of path.split("/")) {
+  for (const segment of target.path.split("/")) {
     if (!segment.startsWith(":")) {
       segments.push(segment);
       continue;
@@ -326,6 +364,9 @@ function urlOf(
     const encoded = encodeURIComponent(textOf(value));
     if (encoded === "" || encoded === "." || encoded === "..") {
       return { refusal: copy.badPathParameter(name) };
+    }
+    if (target.reserved.get(name)?.has(encoded)) {
+      return { refusal: copy.reservedPathParameter(name, encoded) };
     }
     segments.push(encoded);
   }
