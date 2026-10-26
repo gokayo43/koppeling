@@ -701,7 +701,7 @@ const array$1 = (item) => make$26((self, that) => {
 *
 * @since 2.0.0
 */
-const globalStoreId = `effect/GlobalValue`;
+const globalStoreId = `koppeling/GlobalValue`;
 let globalStore;
 /**
 * Retrieves or computes a global value associated with the given `id`. If the value for this `id`
@@ -12457,7 +12457,7 @@ const RuntimeFiberTypeId = /*#__PURE__*/ Symbol.for("effect/Fiber");
 const join = (self) => zipLeft(flatten(self.await), self.inheritAll);
 ({ ...CommitPrototype }), { ...fiberProto };
 /** @internal */
-const currentFiberURI = "effect/FiberCurrent";
+const currentFiberURI = "koppeling/FiberCurrent";
 /** @internal */
 const LoggerTypeId = /*#__PURE__*/ Symbol.for("effect/Logger");
 const loggerVariance = {
@@ -17930,10 +17930,9 @@ const FIELDS = [
 	"input"
 ];
 /**
-* What each word counts once more when the words name an area or a leaf of two
-* or more words whole: a phrase that names a thing outweighs the same words
-* met one by one across other names. A one-word name gets nothing extra, since
-* its one word already counted.
+* What each word counts once more when the words name an area or a leaf
+* whole: an exact name ranks above the same word met inside another name
+* ("stock" inside "restock"), however rare that other word is.
 */
 const WHOLE_WEIGHT = WEIGHTS.name;
 /** The shortest stem a prefix match may take, so "in" does not match "inventory". */
@@ -18014,14 +18013,14 @@ function fieldNames$1(schema, depth = 0) {
 	return [...own.map(([name]) => name), ...own.flatMap(([, child]) => fieldNames$1(child, depth + 1))];
 }
 /**
-* The asked words that name an operation's area or its leaf whole, each of
-* two or more words that were all asked: "product categories list" names the
-* area "product-categories" whole, while it only shares "categories" with
+* The asked words that name an operation's area or its leaf whole, every word
+* of it asked: "stock" names the area "stock", and "product categories list"
+* the area "product-categories", while it only shares "categories" with
 * "admin.products.categories.get".
 */
 function namedWhole(own, asked) {
 	const named = /* @__PURE__ */ new Set();
-	for (const words of [own.area, own.name]) if (words.length > 1 && words.every((word) => asked.has(word))) for (const word of words) named.add(word);
+	for (const words of [own.area, own.name]) if (words.length > 0 && words.every((word) => asked.has(word))) for (const word of words) named.add(word);
 	return named;
 }
 /**
