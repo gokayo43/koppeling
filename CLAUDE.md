@@ -31,8 +31,12 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
 - `src/closed.ts`: closed inputs: the input schema with every object that
   names its keys closed, and the keys a call's input carries that it does not
   name.
+- `src/derived.ts`: the line the door writes for an operation the program
+  wrote none for.
 - `src/run.ts`: one `read` or `write`: the stray-key refusal, the time limit,
   the outcomes and the write events.
+- `src/pages.ts`: long answers in pages, and the door's store of them for
+  their next pages; `src/answer.ts`, what one tool call answers.
 - `src/tools.ts`: the five tools, their schemas built once, and the MCP server
   for one request (or for a refused person).
 - `src/events.ts`: what the door tells the host's logger, and Effect's logger
@@ -104,6 +108,14 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   the declaration bundle inlines whatever an exported module's declarations
   import, which carried 40 KB of Effect types until the public types moved
   into `src/door.ts`.
+- **A long answer is paged at 40 000 characters** (`PAGE_SIZE` in
+  `src/pages.ts`): the API door's probe by a real agent saw Claude Code set a
+  tool result above about 50 000 characters aside instead of reading it. The
+  door keeps each long answer for ten minutes, 20 million characters over all
+  of them, oldest out first; one longer than that is never kept, so each of its
+  pages runs its read again. A `describe` carries an output schema up to 10 000
+  characters (`OUTPUT_BOUND` in `src/tools.ts`; the probe saw a describe of
+  203 000).
 - **`knip` cannot load its config from a worktree under `.claude/`**: knip hands
   jiti `process.cwd()` as a file name, so jiti looks for a tsconfig from the
   parent directory and finds the main checkout's. Run it from `src/` with
