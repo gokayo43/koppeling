@@ -64,6 +64,13 @@ which is why CI does not pass `build: true`. There is no `prepare` script:
   8.8 s per read against its 984 named-model references, about two hours of
   boot. The adapter reads the raw schema from `app.definitions.type[name]`, and
   `tests/elysia.test.ts` holds it to zero reads of the getter.
+- **The Elysia adapter asks the app's own router which route a call's path
+  reaches** (`reached` in `src/adapters/elysia.ts`): `app.router.static`, then
+  `app.router.http.find`, in the order Elysia 1.4.30's generated handler uses
+  (`composeGeneralHandler`: static first, HEAD falling back to GET, and for a
+  parameterised path GET before HEAD, then ALL). That order is Elysia's, not
+  a published contract: on an Elysia bump, re-read it, and the suite's router
+  test, whose oracle is `app.handle` itself, says whether it still holds.
 - **Elysia finds a request's path by searching for `/` from index 11 of its
   URL**, so a request built on a short origin (`http://x`) answers 404 on every
   route; the adapter builds on `http://localhost`.

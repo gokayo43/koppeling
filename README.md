@@ -175,9 +175,12 @@ validation error: Invalid arguments for tool find: …"). That is accepted.
   have been made.
 - A path parameter that is empty, `.` or `..` is refused before the program is
   asked: a URL resolves those, and the call would reach another route. So is a
-  value that a sibling route spells as a static segment at that place
-  (`orders.id.get` with `id: "export"` beside `GET /orders/export`), since
-  Elysia's router prefers the static route.
+  value with which Elysia's own router would send the call to another route
+  (`orders.id.get` with `id: "export"` beside `GET /orders/export` or
+  `GET /orders/export/:format?`): the door asks the app's router which route
+  the built path reaches and refuses any but the operation's own. Elysia
+  answers HEAD with a matching GET route before the HEAD route itself, so a
+  HEAD operation beside a GET route of its shape is refused for every value.
 - The operation runs at most once per call. The door retries nothing.
 
 ## Sign-in
