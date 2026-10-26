@@ -409,6 +409,41 @@ test("a path parameter that would reach another route, by Elysia's own router, i
   });
 });
 
+test("an app built with aot: false is checked against the router it routes with", async () => {
+  const ran: string[] = [];
+  const answer = (route: string) => () => {
+    ran.push(route);
+    return route;
+  };
+  const app = new Elysia({ aot: false })
+    .get("/api/v1/orders/:id", answer("order"))
+    .get("/api/v1/orders/export/:format?", answer("export"), { detail: { koppeling: false } })
+    .get("/api/v1/orders/a b", answer("spaced"), { detail: { koppeling: false } });
+  const [order] = fromElysia(app, { credential, mount: "/api/v1" }).operations;
+
+  expect(order?.name).toBe("orders.id.get");
+  for (const id of ["export", "a b"]) {
+    expect(await order?.run(apiCaller, { params: { id } }, unaborted)).toEqual({
+      refusal: copy.routedElsewhere(["id"]),
+    });
+  }
+  expect(await order?.run(apiCaller, { params: { id: "exports" } }, unaborted)).toEqual({
+    value: "order",
+  });
+  expect(ran).toEqual(["order"]);
+});
+
+test("a parameterised route the door cannot find in Elysia's router fails the boot, naming it", () => {
+  const app = new Elysia().get("/api/v1/orders/:id", () => "order");
+  // An app whose routes live where the door does not look: its router answers
+  // nothing for the route's own path.
+  Object.defineProperty(app.router, "http", { value: { find: () => null } });
+
+  expect(() => fromElysia(app, { credential, mount: "/api/v1" })).toThrow(
+    "Elysia route GET /api/v1/orders/:id",
+  );
+});
+
 test("a route the program withholds from the door is skipped and named, apart from hidden ones", () => {
   const app = new Elysia({ prefix: "/api" })
     .post("/tokens", () => 1, { detail: { koppeling: false } })
