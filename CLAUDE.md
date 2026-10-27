@@ -26,15 +26,18 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
   JSON Schema, to JSON Schema.
 - `src/directory.ts`: a catalogue as the tools read it, built once per door:
   areas, names, each operation's name without its area, the search index and
-  the instructions outline.
+  the instructions outline; and one person's part of it, each operation with
+  the scope tokens it awaits.
 - `src/find.ts`: the search index and the ranking behind `find`.
 - `src/closed.ts`: closed inputs: the input schema with every object that
   names its keys closed, and the keys a call's input carries that it does not
   name.
 - `src/derived.ts`: the line the door writes for an operation the program
   wrote none for.
-- `src/run.ts`: one `read` or `write`: the stray-key refusal, the time limit,
-  the outcomes and the write events.
+- `src/run.ts`: one `read` or `write`: the refusal of an operation awaiting a
+  scope (the second layer behind the door's 403), the omitted input run as the
+  operation's `omittedInput`, the stray-key refusal, the time limit, the
+  outcomes and the write events.
 - `src/pages.ts`: long answers in pages, and the door's store of them for
   their next pages; `src/answer.ts`, what one tool call answers.
 - `src/tools.ts`: the five tools, their schemas built once, and the MCP server
@@ -43,8 +46,11 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
   as the default.
 - `src/glossary.ts`: `glossaryFrom`, a CONTEXT.md to the door's opening words.
 - `src/auth.ts`, `src/door.ts`: the bearer check and `koppeling()`, the HTTP
-  edge, in Effect; `src/door.ts` also holds the public types the host's
-  options name (`Identity`, `KoppelingEvent`).
+  edge, in Effect: it reads a body once, under the SDK's limit, and hands it
+  on parsed. `src/door.ts` also holds the public types the host's options name
+  (`Identity`, `ActorDecision`, `Admission`, `KoppelingEvent`).
+- `src/challenge.ts`: RFC 6750's challenge grammar: a scope's tokens, an
+  `error_description`, and the `WWW-Authenticate` header.
 - `src/copy.ts`: every sentence a person may read, in Dutch.
 - `tests/fixtures/`: a warehouse router shaped like wmstcs's and an API app
   shaped like nfp-elysia's, with invented values only; the suite and

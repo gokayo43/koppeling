@@ -1,5 +1,7 @@
 import type { Catalogue, Operation } from "./catalogue";
+import { scopeTokens } from "./challenge";
 import { copy } from "./copy";
+import type { Admission } from "./door";
 import { searchIndex, type SearchIndex } from "./find";
 
 /** How many of an area's operation names its one line carries. */
@@ -11,11 +13,18 @@ interface Area<Actor> {
   readonly operations: readonly Operation<Actor>[];
 }
 
+/** An operation as one person meets it: with the scope tokens their login must carry to run it. */
+export interface Offered<Actor> {
+  readonly operation: Operation<Actor>;
+  /** Empty for an operation the person may run now. */
+  readonly awaits: readonly string[];
+}
+
 /** A catalogue as the tools read it, built once: by area, by name, and for `find`. */
 export interface Directory<Actor> {
   readonly operations: readonly Operation<Actor>[];
   readonly areas: ReadonlyMap<string, Area<Actor>>;
-  readonly byName: ReadonlyMap<string, Operation<Actor>>;
+  readonly byName: ReadonlyMap<string, Offered<Actor>>;
   readonly search: SearchIndex<Actor>;
 }
 
@@ -28,23 +37,44 @@ function leafOf(operation: Operation<never>): string {
 export function toDirectory<Actor>(catalogue: Catalogue<Actor>): Directory<Actor> {
   const { operations } = catalogue;
   return assembled(
-    operations,
+    operations.map((operation) => ({ operation, awaits: [] })),
     searchIndex(operations.map((operation) => ({ operation, leaf: leafOf(operation) }))),
   );
 }
 
 /**
  * The part of `directory` one person may use: the operations `allows`
- * admits, by area, by name and for `find`. The search keeps the whole
- * catalogue's word counts, so a word's rarity, and with it the ranking, is
- * the same for everyone; no operation outside the part is named by it.
+ * admits, by area, by name and for `find`, each with the scope tokens it
+ * awaits. An answer that is not exactly `true`, `false` or `{ scope }` with a
+ * valid scope throws, naming the operation: a lookup missing its key, or a
+ * falsy stand-in for `false`, would otherwise offer and run it. The search
+ * keeps the whole catalogue's word counts, so a word's rarity, and with it the
+ * ranking, is the same for everyone; no operation outside the part is named
+ * by it.
  */
 export function admitted<Actor>(
   directory: Directory<Actor>,
-  allows: (operation: Operation<Actor>) => boolean,
+  allows: (operation: Operation<Actor>) => Admission,
 ): Directory<Actor> {
-  const kept = directory.operations.filter((operation) => allows(operation));
-  const keep = new Set(kept);
+  const kept: Offered<Actor>[] = [];
+  for (const operation of directory.operations) {
+    const admission: unknown = allows(operation);
+    if (admission === false) continue;
+    if (admission === true) {
+      kept.push({ operation, awaits: [] });
+      continue;
+    }
+    const owner = `allows for "${operation.name}"`;
+    const scope =
+      typeof admission === "object" && admission !== null && "scope" in admission
+        ? admission.scope
+        : undefined;
+    if (typeof scope !== "string") {
+      throw new Error(`${owner} answered neither true, false nor { scope } with a scope string`);
+    }
+    kept.push({ operation, awaits: scopeTokens(scope, owner) });
+  }
+  const keep = new Set(kept.map(({ operation }) => operation));
   return assembled(kept, {
     entries: directory.search.entries.filter(({ operation }) => keep.has(operation)),
     carrying: directory.search.carrying,
@@ -52,9 +82,10 @@ export function admitted<Actor>(
 }
 
 function assembled<Actor>(
-  operations: readonly Operation<Actor>[],
+  offered: readonly Offered<Actor>[],
   search: SearchIndex<Actor>,
 ): Directory<Actor> {
+  const operations = offered.map(({ operation }) => operation);
   const grouped = new Map<string, Operation<Actor>[]>();
   for (const operation of operations) {
     grouped.set(operation.area, [...(grouped.get(operation.area) ?? []), operation]);
@@ -68,7 +99,7 @@ function assembled<Actor>(
   return {
     operations,
     areas,
-    byName: new Map(operations.map((operation) => [operation.name, operation])),
+    byName: new Map(offered.map((entry) => [entry.operation.name, entry])),
     search,
   };
 }

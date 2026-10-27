@@ -77,9 +77,9 @@ function convert(schema: unknown, side: Side): Json | undefined {
 /**
  * An Effect input whose encoded side is `X | undefined` (`Schema.UndefinedOr`,
  * or a default filled in when the input is left out) says the input may be
- * left out, which the door's `call` already allows. JSON Schema has no
- * `undefined`, and `JSONSchema.make` writes the encoded side, so the schema the
- * door writes is the encoded `X`'s.
+ * left out, which `acceptsOmitted` reads from the program's validator. JSON
+ * Schema has no `undefined`, and `JSONSchema.make` writes the encoded side, so
+ * the schema the door writes is the encoded `X`'s.
  */
 function definedPart<A, I, R>(schema: Schema.Schema<A, I, R>) {
   let ast = schema.ast;
@@ -126,6 +126,41 @@ function withoutDroppedOpenness(json: Json): Json {
         ? []
         : [[key, withoutDroppedOpenness(value)]],
     ),
+  );
+}
+
+/**
+ * Whether a program's own validator takes an omitted value, asked through
+ * Standard Schema's `validate` as tRPC itself asks it. A validator that
+ * answers only later (a `Promise`, for an asynchronous check) is taken to
+ * accept it, so the program's own parse decides, as it did before the door
+ * chose; one that throws takes it no more than one that answers issues.
+ */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- a program's validator, in whichever schema language the program chose
+export function acceptsOmitted(schema: unknown): boolean {
+  if ((typeof schema !== "object" && typeof schema !== "function") || schema === null) return false;
+  const standard = "~standard" in schema ? schema["~standard"] : undefined;
+  if (typeof standard !== "object" || standard === null || !("validate" in standard)) return false;
+  const { validate } = standard;
+  if (typeof validate !== "function") return false;
+  let result: unknown;
+  try {
+    result = validate.call(standard, undefined);
+  } catch {
+    return false;
+  }
+  if (result instanceof Promise) return true;
+  return typeof result === "object" && result !== null && !("issues" in result && result.issues);
+}
+
+/** Whether a schema takes an object and nothing else: an object's, or an `allOf` of such. */
+export function takesObject(schema: JsonSchema): boolean {
+  if (schema["type"] === "object") return true;
+  const parts = schema["allOf"];
+  return (
+    isJsonArray(parts) &&
+    parts.length > 0 &&
+    parts.every((part) => isJsonObject(part) && takesObject(part))
   );
 }
 

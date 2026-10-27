@@ -1,9 +1,18 @@
 import { expect, setSystemTime, test } from "bun:test";
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { createLocalJWKSet } from "jose";
 
 import { copy } from "../src/copy";
-import { fromTrpcRouter, koppeling, type ActorDecision, type KoppelingEvent } from "../src/index";
+import {
+  fromTrpcRouter,
+  koppeling,
+  type ActorDecision,
+  type Admission,
+  type Identity,
+  type Json,
+  type KoppelingEvent,
+} from "../src/index";
 import { warehouseAdmin } from "./fixtures/doors";
 import { contextFor, glossary, warehouseRouter, type WarehouseActor } from "./fixtures/warehouse";
 import { identityProvider, ISSUER, JWKS_URL, RESOURCE } from "./support/identity";
@@ -14,6 +23,7 @@ function warehouseDoor(
 ) {
   const asked: unknown[] = [];
   const invoked: string[] = [];
+  const events: KoppelingEvent[] = [];
   const door = koppeling({
     catalogue: fromTrpcRouter(
       warehouseRouter((path) => invoked.push(path)),
@@ -26,11 +36,17 @@ function warehouseDoor(
       asked.push(claims);
       return decide();
     },
+    log: (event) => events.push(event),
   });
-  return { door, asked, invoked };
+  return { door, asked, invoked, events };
 }
 
-const mcpPost = (token: string | undefined) =>
+const METADATA_URL = "https://wms.example/.well-known/oauth-protected-resource/api/mcp";
+
+const jsonRpcPost = (
+  token: string | undefined,
+  message: { readonly method: string; readonly params?: Json },
+) =>
   new Request(RESOURCE, {
     method: "POST",
     headers: {
@@ -38,16 +54,17 @@ const mcpPost = (token: string | undefined) =>
       accept: "application/json, text/event-stream",
       ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
     },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: "2025-06-18",
-        capabilities: {},
-        clientInfo: { name: "probe", version: "1" },
-      },
-    }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...message }),
+  });
+
+const mcpPost = (token: string | undefined) =>
+  jsonRpcPost(token, {
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "probe", version: "1" },
+    },
   });
 
 async function clientOf(
@@ -296,6 +313,41 @@ test("a key set the door cannot fetch answers 503, not 401", async () => {
   expect(asked).toEqual([]);
 });
 
+test("a door given the host's keys verifies with them and fetches nothing", async () => {
+  // The likeliest wrong still builds the remote key set and asks it, so the
+  // host's self-fetch stays; the provider is unreachable here, so any fetch
+  // answers 503.
+  using idp = await identityProvider();
+  idp.served.reachable = false;
+  const keys = createLocalJWKSet(idp.jwks());
+  await idp.rotate("unheld");
+  const door = koppeling({
+    catalogue: fromTrpcRouter(warehouseRouter(), { contextFor }),
+    glossary,
+    resource: { url: RESOURCE, scopes: [] },
+    identity: { issuer: ISSUER, keys, authorizationServer: ISSUER },
+    actorFor: () => ({ actor: warehouseAdmin }),
+  });
+
+  expect((await door.handle(mcpPost(await idp.token({}, { kid: "first" })))).status).toBe(200);
+  const unheld = await door.handle(mcpPost(await idp.token({}, { kid: "unheld" })));
+  expect(unheld.status).toBe(401);
+  expect(unheld.headers.get("www-authenticate")).toContain('error="invalid_token"');
+  expect(idp.served.count).toBe(0);
+});
+
+// A host gives the door its keys or where to fetch them, never both: the
+// likeliest wrong makes both optional, so a host passing both cannot tell
+// which one the door uses. The type carries the check, so `tsc` grades it.
+// @ts-expect-error -- keys and jwksUrl are two answers to one question
+const bothKeysAndUrl: Identity = {
+  issuer: ISSUER,
+  keys: createLocalJWKSet({ keys: [] }),
+  jwksUrl: JWKS_URL,
+  authorizationServer: ISSUER,
+};
+void bothKeysAndUrl;
+
 test("a method other than POST answers 405 without asking for a token", async () => {
   const { door } = warehouseDoor();
   const response = await door.handle(
@@ -389,4 +441,190 @@ test("an allows that throws answers 503 with the door's sentence, as an actorFor
 
   expect(response.status).toBe(503);
   expect(await response.text()).toBe(JSON.stringify({ error: copy.personUnreachable }));
+});
+
+test("a host's signIn answers 401 invalid_token with its sentence, the header's copy kept to RFC 6750's characters", async () => {
+  // The likeliest wrong answers it in MCP as a refusal is answered, which no
+  // client signs in again on; the next copies the sentence into the header
+  // as it is, where its quotes end the value early.
+  using idp = await identityProvider();
+  const sentence =
+    'Wissel je "koppelingstoken" eerst in bij https://portal.example/koppeling\\inwisselen, één keer.';
+  const { door, invoked } = warehouseDoor(() => ({ signIn: sentence }));
+  const response = await door.handle(mcpPost(await idp.token()));
+
+  expect(response.status).toBe(401);
+  expect(response.headers.get("www-authenticate")).toBe(
+    `Bearer resource_metadata="${METADATA_URL}", error="invalid_token", error_description="Wissel je koppelingstoken eerst in bij https://portal.example/koppelinginwisselen, een keer."`,
+  );
+  expect(await response.json()).toEqual({ error: sentence });
+  expect(invoked).toEqual([]);
+});
+
+test("an operation under a scope is listed and described with it, and its read or write answers 403 insufficient_scope, running nothing", async () => {
+  // The likeliest wrong hides it as allows' false does, so the person's
+  // program never learns that signing in again would give it; the next
+  // refuses it inside MCP, where no client signs in again.
+  using idp = await identityProvider();
+  const { door, invoked, events } = warehouseDoor(() => ({
+    actor: warehouseAdmin,
+    allows: (operation) => {
+      if (operation.name === "orders.get") return { scope: "orders:lezen" };
+      if (operation.name === "orders.cancel") return { scope: "orders:schrijven orders:lezen" };
+      return true;
+    },
+  }));
+  const token = await idp.token();
+  const client = await clientOf(door.handle, token, "modern");
+
+  const listed = await client.callTool({ name: "list", arguments: { area: "orders" } });
+  expect(JSON.stringify(listed.structuredContent)).toContain('"orders.cancel"');
+  expect(JSON.stringify(listed.structuredContent)).toContain('"orders.get"');
+  const found = await client.callTool({ name: "find", arguments: { words: "order annuleren" } });
+  expect(JSON.stringify(found.structuredContent)).toContain('"orders.cancel"');
+  const described = await client.callTool({ name: "describe", arguments: { name: "orders.get" } });
+  expect(described.structuredContent).toMatchObject({ name: "orders.get", scope: "orders:lezen" });
+  const unscoped = await client.callTool({
+    name: "read",
+    arguments: { name: "inventory.bySku", input: { sku: "SKU-1" } },
+  });
+  expect(unscoped.isError).toBeFalsy();
+  const stepUp = await client
+    .callTool({ name: "write", arguments: { name: "orders.cancel", input: { orderId: 1 } } })
+    .then(
+      () => "answered",
+      // oxlint-disable-next-line anti-slop/no-unknown-parameters -- whatever the client rejected with
+      (error: unknown) => String(error),
+    );
+  expect(stepUp).toBe(
+    'InsufficientScopeError: Insufficient scope: required "orders:schrijven orders:lezen"',
+  );
+  expect(invoked).toEqual(["inventory.bySku"]);
+  await client.close();
+
+  const call = (tool: "read" | "write", name: string, input: Json) =>
+    door.handle(
+      jsonRpcPost(token, {
+        method: "tools/call",
+        params: { name: tool, arguments: { name, input } },
+      }),
+    );
+  const read = await call("read", "orders.get", { orderId: 1 });
+  expect(read.status).toBe(403);
+  expect(read.headers.get("www-authenticate")).toBe(
+    `Bearer resource_metadata="${METADATA_URL}", error="insufficient_scope", scope="orders:lezen"`,
+  );
+  expect(await read.json()).toEqual({ error: copy.scopeAwaited(["orders:lezen"]) });
+  const write = await call("write", "orders.cancel", { orderId: 1 });
+  expect(write.status).toBe(403);
+  expect(write.headers.get("www-authenticate")).toBe(
+    `Bearer resource_metadata="${METADATA_URL}", error="insufficient_scope", scope="orders:schrijven orders:lezen"`,
+  );
+  expect(invoked).toEqual(["inventory.bySku"]);
+  expect(events).toEqual([]);
+});
+
+test("a scope outside RFC 6750's characters answers 503 and reports which operation allows gave it to", async () => {
+  using idp = await identityProvider();
+  const { door, events } = warehouseDoor(() => ({
+    actor: warehouseAdmin,
+    allows: (operation) => (operation.name === "orders.get" ? { scope: 'orders "lezen"' } : true),
+  }));
+  const response = await door.handle(mcpPost(await idp.token()));
+
+  expect(response.status).toBe(503);
+  expect(events).toMatchObject([{ kind: "failure", operation: null }]);
+  expect(String(events[0]?.kind === "failure" && events[0].cause)).toContain('"orders.get"');
+});
+
+test("an allows answer that is neither true, false nor a scope string answers 503 and runs nothing", async () => {
+  // The likeliest wrong reads anything but true and false as { scope }, so
+  // { scope: undefined } (a lookup missing its key) stores no scope and the
+  // operation runs, and 0 is listed and run where the old filter hid it.
+  using idp = await identityProvider();
+  const token = await idp.token();
+  const answers: readonly unknown[] = [{ scope: undefined }, 0];
+  for (const answer of answers) {
+    const { door, invoked, events } = warehouseDoor(() => ({
+      actor: warehouseAdmin,
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- an answer its type forbids, as a cast or a missing key gives one
+      allows: (operation) => (operation.area === "suppliers" ? (answer as Admission) : true),
+    }));
+    const response = await door.handle(
+      jsonRpcPost(token, {
+        method: "tools/call",
+        params: {
+          name: "write",
+          arguments: { name: "suppliers.delete", input: { supplierId: 1 } },
+        },
+      }),
+    );
+
+    expect(response.status).toBe(503);
+    expect(invoked).toEqual([]);
+    expect(events).toMatchObject([{ kind: "failure", operation: null }]);
+    expect(String(events[0]?.kind === "failure" && events[0].cause)).toContain('"suppliers.');
+  }
+});
+
+test("a body past the SDK's 4 MiB is answered 413 having read no further, at a door that awaits a scope and for a refused person alike", async () => {
+  // The likeliest wrong reads the whole body before the SDK's own limit
+  // applies, so an endless body holds the door's memory until it dies; this one
+  // ends at 16 MiB so the unbounded read finishes.
+  using idp = await identityProvider();
+  const token = await idp.token();
+  const CHUNK = 64 * 1024;
+  const decisions: readonly (() => ActorDecision<WarehouseActor>)[] = [
+    () => ({
+      actor: warehouseAdmin,
+      allows: (operation) =>
+        operation.name === "orders.cancel" ? { scope: "orders:schrijven" } : true,
+    }),
+    () => ({ refusal: "Je hebt geen toegang tot het magazijn." }),
+  ];
+  for (const decide of decisions) {
+    const { door } = warehouseDoor(decide);
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 16 * 1024 * 1024) return controller.close();
+        pulled += CHUNK;
+        controller.enqueue(new Uint8Array(CHUNK).fill(0x20));
+      },
+    });
+    const response = await door.handle(
+      new Request(RESOURCE, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: endless,
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(pulled).toBeLessThanOrEqual(4 * 1024 * 1024 + 4 * CHUNK);
+  }
+});
+
+test("a body that is no JSON reaches the SDK as its text, which answers it in its own words", async () => {
+  using idp = await identityProvider();
+  const { door, invoked } = warehouseDoor();
+  const response = await door.handle(
+    new Request(RESOURCE, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await idp.token()}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: '{"jsonrpc": "2.0", "id": 1, "method": "tools/ca',
+    }),
+  );
+
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code: -32700 } });
+  expect(invoked).toEqual([]);
 });

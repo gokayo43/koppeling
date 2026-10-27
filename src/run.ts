@@ -54,10 +54,14 @@ class TimedOut extends Data.TaggedError("TimedOut") {}
 /**
  * Runs the named operation once, as the session's person, through the tool
  * of its kind: a read through `read`, a write through `write`. The program's
- * refusal comes back as a tool error carrying its sentence. A failure is
- * reported and answered with the door's own sentence, so a database's words
- * never reach the person; for a write that reached the program, that sentence
- * says the change may have been made. Every write leaves one write event.
+ * refusal comes back as a tool error carrying its sentence. An operation the
+ * person may run only once their login carries a scope is refused before
+ * anything runs: the second layer behind the door's HTTP 403, which answers
+ * such a call before it reaches here. An omitted input runs as the
+ * operation's `omittedInput`. A failure is reported and
+ * answered with the door's own sentence, so a database's words never reach
+ * the person; for a write that reached the program, that sentence says the
+ * change may have been made. Every write leaves one write event.
  *
  * A read's answer longer than a page comes in pages, `vervolg` naming the
  * next (`paged`); a write's comes whole, since a write is never run again.
@@ -66,13 +70,16 @@ export function call<Actor>(
   session: Session<Actor>,
   tool: Kind,
   name: string,
-  input: Json | undefined,
+  given: Json | undefined,
   vervolg?: string,
 ): Effect.Effect<Answer> {
-  const operation = session.directory.byName.get(name);
-  if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
+  const offered = session.directory.byName.get(name);
+  if (offered === undefined) return Effect.succeed(unknownOperation(session.directory, name));
+  const { operation, awaits } = offered;
+  if (awaits.length > 0) return Effect.succeed(refusal(copy.scopeAwaited(awaits)));
   if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
   const write = operation.kind === "write";
+  const input = given === undefined ? operation.omittedInput : given;
   const strays = strayKeys(operation.input, input);
   if (strays.length) {
     const refused = refusal(

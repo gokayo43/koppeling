@@ -1,4 +1,4 @@
-import { JWTPayload } from "jose";
+import { JWTPayload, JWTVerifyGetKey } from "jose";
 import { AnyElysia } from "elysia";
 import { AnyTRPCRouter, inferRouterContext } from "@trpc/server";
 //#region src/json.d.ts
@@ -46,6 +46,12 @@ interface Operation<Actor> {
   readonly idempotent: boolean;
   /** Every object that names its keys is closed: a call carrying any other key is refused. */
   readonly input: JsonSchema;
+  /**
+   * What the operation runs with when a call leaves its input out: `undefined`
+   * where the program takes no input or accepts an omitted one, `{}` where it
+   * takes an object and nothing else.
+   */
+  readonly omittedInput: Json | undefined;
   readonly output: JsonSchema | undefined;
   /**
    * Runs the operation once, as `actor`, through the program's own code path,
@@ -129,19 +135,33 @@ interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
 export declare function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(router: Router, options: TrpcOptions<Router, Actor>): Catalogue<Actor>;
 //#endregion
 //#region src/door.d.ts
-/** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
-interface Identity {
+/**
+ * The identity provider whose tokens the door accepts: the portal, for every
+ * koppeling. Its signing keys are fetched from `jwksUrl`, or handed over as
+ * `keys` by a host that holds them itself; never both.
+ */
+type Identity = {
   /** The `iss` every token must carry: the provider's public origin. */
   readonly issuer: string;
+  /** The authorization server the metadata document sends a client to for its sign-in. */
+  readonly authorizationServer: string;
+} & ({
   /**
    * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
    * when absent. Separate from `issuer` so a host beside the provider can fetch
    * them over its own network while tokens still name the public origin.
    */
   readonly jwksUrl?: string;
-  /** The authorization server the metadata document sends a client to for its sign-in. */
-  readonly authorizationServer: string;
-}
+  readonly keys?: never;
+} | {
+  /**
+   * The provider's signing keys as the host holds them (jose's
+   * `createLocalJWKSet`, or a key set of its own), so the door fetches
+   * nothing to verify a token. A host that is the provider passes its own.
+   */
+  readonly keys: JWTVerifyGetKey;
+  readonly jwksUrl?: never;
+});
 /**
  * What a write came to: the program's value, its refusal, a failure before the
  * program was reached (nothing changed), or `unknown`: the program was reached
@@ -167,16 +187,32 @@ type KoppelingEvent = {
   readonly cause: unknown;
 };
 /**
+ * Whether a person may use an operation. `true`: yes. `false`: the door hides
+ * it from them. `{ scope }`: they may see it (the outline, `list` and `find`
+ * show it, `describe` names the scope) but run it only once their login
+ * carries `scope`, an OAuth scope or several split by one space; a `read` or
+ * `write` of it is answered 403 `insufficient_scope` naming the scope, on which
+ * their program signs in again asking for it, and nothing is run.
+ */
+type Admission = boolean | {
+  readonly scope: string;
+};
+/**
  * Who a token's person is to the program, with the operations they may use
- * (every one when `allows` is absent), or the program's sentence for why they
- * may not come in.
+ * (every one when `allows` is absent); or the program's sentence for why they
+ * may not come in (`refusal`, answered in MCP for their program to show); or
+ * its sentence for why this token must go through the sign-in again before it
+ * comes in (`signIn`, answered 401 `invalid_token`, on which their program
+ * signs in again).
  */
 type ActorDecision<Actor> = {
   readonly actor: Actor;
-  /** Whether the person may use `operation`: the door lists, finds, describes and runs only those. */
-  readonly allows?: (operation: Operation<Actor>) => boolean;
+  /** What the person may do with `operation`; the door offers only what it admits. */
+  readonly allows?: (operation: Operation<Actor>) => Admission;
 } | {
   readonly refusal: string;
+} | {
+  readonly signIn: string;
 };
 interface KoppelingOptions<Actor> {
   readonly catalogue: Catalogue<Actor>;
@@ -226,4 +262,4 @@ interface GlossaryOptions {
  */
 export declare function glossaryFrom(markdown: string, options: GlossaryOptions): string;
 //#endregion
-export type { ActorDecision, BootReport, Catalogue, ElysiaOptions, GlossaryOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingEvent, KoppelingMeta, KoppelingOptions, Note, Operation, Outcome, TrpcOptions, WriteOutcome };
+export type { ActorDecision, Admission, BootReport, Catalogue, ElysiaOptions, GlossaryOptions, Identity, Json, JsonObject, JsonSchema, Kind, Koppeling, KoppelingEvent, KoppelingMeta, KoppelingOptions, Note, Operation, Outcome, TrpcOptions, WriteOutcome };

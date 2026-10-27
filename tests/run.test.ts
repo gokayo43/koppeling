@@ -1,16 +1,26 @@
 import { expect, test } from "bun:test";
 
-import { Effect, Fiber, HashMap, Logger, TestClock, TestContext } from "effect";
+import { initTRPC } from "@trpc/server";
+import { Effect, Fiber, HashMap, Logger, Schema, TestClock, TestContext } from "effect";
 import { Elysia } from "elysia";
+import { z } from "zod";
 
 import { copy } from "../src/copy";
-import { toDirectory } from "../src/directory";
+import { admitted, toDirectory } from "../src/directory";
 import { reporter } from "../src/events";
-import { fromElysia } from "../src/index";
+import { fromElysia, fromTrpcRouter } from "../src/index";
+import { isJsonObject } from "../src/json";
 import { Pages } from "../src/pages";
 import { call, OPERATION_TIME_LIMIT } from "../src/run";
 import { credential } from "./fixtures/api";
-import { apiCaller, warehouseAdmin, warehouseDirectory, warehousePicker } from "./fixtures/doors";
+import {
+  apiCaller,
+  apiDirectory,
+  warehouseAdmin,
+  warehouseDirectory,
+  warehousePicker,
+} from "./fixtures/doors";
+import { sketched } from "./support/operations";
 import { sessionOf } from "./support/session";
 
 const claims = { sub: "person-7", name: "Beheerder Een", via: "Claude" };
@@ -136,4 +146,103 @@ test("an operation that does not finish within the time limit is given up on, an
       outcome: "unknown",
     },
   ]);
+});
+
+test("an omitted input is {} for an operation whose input is an object, and stays omitted for any other", async () => {
+  // The likeliest wrong validates nothing in place of {}, so an operation
+  // whose every field is optional is refused for being left out.
+  const t = initTRPC.context<object>().create();
+  const seen: unknown[] = [];
+  const router = t.router({
+    optional: t.procedure
+      .input(z.object({ entity: z.string().optional() }))
+      .query(({ input }) => (seen.push(input), "optional")),
+    required: t.procedure.input(z.object({ entity: z.string() })).query(() => "required"),
+    text: t.procedure.input(z.string().optional()).query(({ input }) => (seen.push(input), "text")),
+    none: t.procedure.query(() => "none"),
+  });
+  const { session } = sessionOf(
+    toDirectory(fromTrpcRouter(router, { contextFor: () => ({}) })),
+    null,
+    claims,
+  );
+  const read = (name: string) => Effect.runPromise(call(session, "read", name, undefined));
+
+  expect((await read("optional")).structured).toEqual({ result: "optional" });
+  expect((await read("text")).structured).toEqual({ result: "text" });
+  expect((await read("none")).structured).toEqual({ result: "none" });
+  expect(seen).toEqual([{}, undefined]);
+  const missing = await read("required");
+  expect(missing.isError).toBe(true);
+  expect(missing.structured).toMatchObject({
+    details: { issues: [{ path: ["entity"] }] },
+  });
+});
+
+test("a read or write of an operation awaiting a scope is refused where it is dispatched, running nothing and logging no write", async () => {
+  // The likeliest wrong leaves the refusal to the door's HTTP pre-check alone,
+  // so a call that check reads differently from the MCP server still runs.
+  const ran: string[] = [];
+  const directory = admitted(
+    toDirectory(
+      sketched(
+        [
+          { name: "orders.cancel", kind: "write" },
+          { name: "orders.get", kind: "read" },
+        ],
+        ran,
+      ),
+    ),
+    (operation) => ({ scope: operation.kind === "write" ? "orders:schrijven" : "orders:lezen" }),
+  );
+  const { session, events } = sessionOf(directory, null, claims);
+
+  const write = await Effect.runPromise(call(session, "write", "orders.cancel", {}));
+  const read = await Effect.runPromise(call(session, "read", "orders.get", {}));
+
+  expect(write).toEqual({ text: copy.scopeAwaited(["orders:schrijven"]), isError: true });
+  expect(read).toEqual({ text: copy.scopeAwaited(["orders:lezen"]), isError: true });
+  expect(ran).toEqual([]);
+  expect(events).toEqual([]);
+});
+
+test("an omitted input runs with what the program takes: nothing where it accepts nothing, {} where it takes only an object", async () => {
+  // The likeliest wrong re-derives the default from the shown schema, which
+  // has lost that an input may be left out: an omittable object is then run
+  // with {} and refused for its required field, a stack of object inputs
+  // (allOf, no top-level type) is run with nothing, and a procedure with no
+  // input starts receiving {}.
+  const t = initTRPC.context<object>().create();
+  const raw: unknown[] = [];
+  const seen: unknown[] = [];
+  const router = t.router({
+    undefinedOr: t.procedure
+      .input(Schema.standardSchemaV1(Schema.UndefinedOr(Schema.Struct({ page: Schema.Int }))))
+      .query(({ input }) => (seen.push(input), "undefinedOr")),
+    zodOptional: t.procedure
+      .input(z.object({ page: z.number() }).optional())
+      .query(({ input }) => (seen.push(input), "zodOptional")),
+    stacked: t.procedure
+      .input(z.object({ a: z.string().optional() }))
+      .input(z.object({ b: z.string().optional() }))
+      .query(({ input }) => (seen.push(input), "stacked")),
+    none: t.procedure
+      .use(async ({ getRawInput, next }) => (raw.push(await getRawInput()), next()))
+      .query(() => "none"),
+  });
+  const catalogue = fromTrpcRouter(router, { contextFor: () => ({}) });
+  const { session } = sessionOf(toDirectory(catalogue), null, claims);
+  const read = (name: string) => Effect.runPromise(call(session, "read", name, undefined));
+
+  for (const name of ["undefinedOr", "zodOptional", "stacked", "none"]) {
+    expect((await read(name)).structured).toEqual({ result: name });
+  }
+  expect(seen).toEqual([undefined, undefined, {}]);
+  expect(raw).toEqual([undefined]);
+  expect(
+    Object.fromEntries(catalogue.operations.map(({ name, omittedInput }) => [name, omittedInput])),
+  ).toEqual({ none: undefined, stacked: {}, undefinedOr: undefined, zodOptional: undefined });
+  expect(apiDirectory().operations.every(({ omittedInput }) => isJsonObject(omittedInput))).toBe(
+    true,
+  );
 });
