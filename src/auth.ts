@@ -15,7 +15,8 @@ export class KeysUnreachable extends Data.TaggedError("KeysUnreachable")<{
 
 /**
  * jose's codes for a key set it could not fetch or read, as opposed to a token
- * it refused; anything that is not a jose error at all is the fetch failing.
+ * it refused; anything that is not a jose error at all is the key set failing
+ * to load: the fetch, or a host's own `keys`.
  */
 const KEYS_FAILED = new Set(["ERR_JWKS_TIMEOUT", "ERR_JWKS_INVALID", "ERR_JOSE_GENERIC"]);
 
@@ -32,15 +33,18 @@ const REFETCH_COOLDOWN_MS = 5_000;
 
 /**
  * Verifies a request's bearer as a JWT from `identity` for `audience`: its
- * signature against the provider's key set (cached, and fetched again for a
- * key id it has not seen), its `iss`, its `aud`, `nbf`, and that it carries
- * an `exp` and a `sub`: a token that never expires, or names no person, is
- * not one the portal signs.
+ * signature against the host's `keys`, or else the provider's key set (cached,
+ * and fetched again for a key id it has not seen), its `iss`, its `aud`,
+ * `nbf`, and that it carries an `exp` and a `sub`: a token that never expires,
+ * or names no person, is not one the portal signs.
  */
 export function bearerVerifier(identity: Identity, audience: string) {
-  const jwksUrl =
-    identity.jwksUrl ?? `${identity.issuer.replace(/\/+$/, "")}/.well-known/jwks.json`;
-  const keys = createRemoteJWKSet(new URL(jwksUrl), { cooldownDuration: REFETCH_COOLDOWN_MS });
+  const keys =
+    identity.keys ??
+    createRemoteJWKSet(
+      new URL(identity.jwksUrl ?? `${identity.issuer.replace(/\/+$/, "")}/.well-known/jwks.json`),
+      { cooldownDuration: REFETCH_COOLDOWN_MS },
+    );
   return (request: Request): Effect.Effect<JWTPayload, Unauthenticated | KeysUnreachable> => {
     const token = BEARER.exec(request.headers.get("authorization") ?? "")?.[1];
     if (token === undefined) {

@@ -6,7 +6,7 @@ import {
   type McpServer,
 } from "@modelcontextprotocol/server";
 import { Data, Effect } from "effect";
-import type { JWTPayload } from "jose";
+import type { JWTPayload, JWTVerifyGetKey } from "jose";
 
 import { bearerVerifier } from "./auth";
 import type { Catalogue, Note, Operation } from "./catalogue";
@@ -16,19 +16,36 @@ import { reporter } from "./events";
 import { Pages } from "./pages";
 import { mcpServer, refusalServer } from "./tools";
 
-/** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
-export interface Identity {
+/**
+ * The identity provider whose tokens the door accepts: the portal, for every
+ * koppeling. Its signing keys are fetched from `jwksUrl`, or handed over as
+ * `keys` by a host that holds them itself; never both.
+ */
+export type Identity = {
   /** The `iss` every token must carry: the provider's public origin. */
   readonly issuer: string;
-  /**
-   * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
-   * when absent. Separate from `issuer` so a host beside the provider can fetch
-   * them over its own network while tokens still name the public origin.
-   */
-  readonly jwksUrl?: string;
   /** The authorization server the metadata document sends a client to for its sign-in. */
   readonly authorizationServer: string;
-}
+} & (
+  | {
+      /**
+       * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
+       * when absent. Separate from `issuer` so a host beside the provider can fetch
+       * them over its own network while tokens still name the public origin.
+       */
+      readonly jwksUrl?: string;
+      readonly keys?: never;
+    }
+  | {
+      /**
+       * The provider's signing keys as the host holds them (jose's
+       * `createLocalJWKSet`, or a key set of its own), so the door fetches
+       * nothing to verify a token. A host that is the provider passes its own.
+       */
+      readonly keys: JWTVerifyGetKey;
+      readonly jwksUrl?: never;
+    }
+);
 
 /**
  * What a write came to: the program's value, its refusal, a failure before the

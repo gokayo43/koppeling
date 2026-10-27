@@ -1,9 +1,16 @@
 import { expect, setSystemTime, test } from "bun:test";
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { createLocalJWKSet } from "jose";
 
 import { copy } from "../src/copy";
-import { fromTrpcRouter, koppeling, type ActorDecision, type KoppelingEvent } from "../src/index";
+import {
+  fromTrpcRouter,
+  koppeling,
+  type ActorDecision,
+  type Identity,
+  type KoppelingEvent,
+} from "../src/index";
 import { warehouseAdmin } from "./fixtures/doors";
 import { contextFor, glossary, warehouseRouter, type WarehouseActor } from "./fixtures/warehouse";
 import { identityProvider, ISSUER, JWKS_URL, RESOURCE } from "./support/identity";
@@ -294,6 +301,38 @@ test("a key set the door cannot fetch answers 503, not 401", async () => {
 
   expect(response.status).toBe(503);
   expect(asked).toEqual([]);
+});
+
+test("a door given the host's keys verifies with them and fetches nothing", async () => {
+  // The likeliest wrong still builds the remote key set and asks it, so the
+  // host's self-fetch stays; the provider is unreachable here, so any fetch
+  // answers 503.
+  using idp = await identityProvider();
+  idp.served.reachable = false;
+  const keys = createLocalJWKSet(idp.jwks());
+  await idp.rotate("unheld");
+  const door = koppeling({
+    catalogue: fromTrpcRouter(warehouseRouter(), { contextFor }),
+    glossary,
+    resource: { url: RESOURCE, scopes: [] },
+    identity: { issuer: ISSUER, keys, authorizationServer: ISSUER },
+    actorFor: () => ({ actor: warehouseAdmin }),
+  });
+
+  expect((await door.handle(mcpPost(await idp.token({}, { kid: "first" })))).status).toBe(200);
+  const unheld = await door.handle(mcpPost(await idp.token({}, { kid: "unheld" })));
+  expect(unheld.status).toBe(401);
+  expect(unheld.headers.get("www-authenticate")).toContain('error="invalid_token"');
+  expect(idp.served.count).toBe(0);
+});
+
+test("a host gives the door its keys or where to fetch them, never both", () => {
+  // The likeliest wrong makes both optional, so a host passing both cannot
+  // tell which one the door uses.
+  const keys = createLocalJWKSet({ keys: [] });
+  // @ts-expect-error -- keys and jwksUrl are two answers to one question
+  const both: Identity = { issuer: ISSUER, keys, jwksUrl: JWKS_URL, authorizationServer: ISSUER };
+  void both;
 });
 
 test("a method other than POST answers 405 without asking for a token", async () => {

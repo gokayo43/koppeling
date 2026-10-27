@@ -38,6 +38,8 @@ export async function identityProvider() {
   globalThis.fetch = Object.assign(fake, { preconnect: original.preconnect });
   return {
     served,
+    /** The key set as it stands, for a host that holds it itself. */
+    jwks: () => ({ keys: keys.map((key) => key.jwk) }),
     /** Starts signing with a new key, which the key set serves from now on. */
     async rotate(kid: string) {
       keys.push(await signingKey(kid));
