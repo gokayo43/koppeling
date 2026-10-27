@@ -1,4 +1,4 @@
-import { McpServer, WebStandardStreamableHTTPServerTransport, createMcpHandler, fromJsonSchema, getOAuthProtectedResourceMetadataUrl, isLegacyRequest } from "@modelcontextprotocol/server";
+import { McpServer, WebStandardStreamableHTTPServerTransport, createMcpHandler, fromJsonSchema, getOAuthProtectedResourceMetadataUrl, isLegacyRequest, isSpecType } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, errors, jwtVerify } from "jose";
 //#region src/json.ts
 function isJsonObject(value) {
@@ -340,7 +340,7 @@ const copy$2 = {
 		},
 		run: {
 			name: "De naam van de operatie, precies zoals list of find haar noemt.",
-			input: "De invoer volgens het invoerschema dat describe geeft. Laat weg als de operatie geen invoer heeft.",
+			input: "De invoer volgens het invoerschema dat describe geeft. Weglaten is hetzelfde als {} wanneer dat schema een object is, dus laat haar weg als de operatie geen invoer heeft of geen veld verplicht is.",
 			vervolg: "Het vervolg dat het vorige deel van een lang antwoord noemt, met verder precies dezelfde vraag. Laat weg voor het eerste deel."
 		}
 	},
@@ -374,6 +374,7 @@ const copy$2 = {
 	badPathParameter: (name) => `params.${name} staat in het pad en mag niet leeg, "." of ".." zijn.`,
 	noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",
 	badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
+	scopeAwaited: (scopes) => `Deze operatie vraagt een inlog met toegang tot ${quoted(scopes)}. Log opnieuw in vanuit het programma en geef die toegang; er is niets uitgevoerd.`,
 	keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw.",
 	personUnreachable: "De inlog is gecontroleerd, maar wie je bent kan nu niet worden opgezocht. Probeer het later opnieuw."
 };
@@ -18670,7 +18671,8 @@ var Unauthenticated = class extends TaggedError("Unauthenticated") {};
 var KeysUnreachable = class extends TaggedError("KeysUnreachable") {};
 /**
 * jose's codes for a key set it could not fetch or read, as opposed to a token
-* it refused; anything that is not a jose error at all is the fetch failing.
+* it refused; anything that is not a jose error at all is the key set failing
+* to load: the fetch, or a host's own `keys`.
 */
 const KEYS_FAILED = /* @__PURE__ */ new Set([
 	"ERR_JWKS_TIMEOUT",
@@ -18688,14 +18690,13 @@ const BEARER = /^Bearer\s+(\S+)\s*$/i;
 const REFETCH_COOLDOWN_MS = 5e3;
 /**
 * Verifies a request's bearer as a JWT from `identity` for `audience`: its
-* signature against the provider's key set (cached, and fetched again for a
-* key id it has not seen), its `iss`, its `aud`, `nbf`, and that it carries
-* an `exp` and a `sub`: a token that never expires, or names no person, is
-* not one the portal signs.
+* signature against the host's `keys`, or else the provider's key set (cached,
+* and fetched again for a key id it has not seen), its `iss`, its `aud`,
+* `nbf`, and that it carries an `exp` and a `sub`: a token that never expires,
+* or names no person, is not one the portal signs.
 */
 function bearerVerifier(identity, audience) {
-	const jwksUrl = identity.jwksUrl ?? `${identity.issuer.replace(/\/+$/, "")}/.well-known/jwks.json`;
-	const keys = createRemoteJWKSet(new URL(jwksUrl), { cooldownDuration: REFETCH_COOLDOWN_MS });
+	const keys = identity.keys ?? createRemoteJWKSet(new URL(identity.jwksUrl ?? `${identity.issuer.replace(/\/+$/, "")}/.well-known/jwks.json`), { cooldownDuration: REFETCH_COOLDOWN_MS });
 	return (request) => {
 		const token = BEARER.exec(request.headers.get("authorization") ?? "")?.[1];
 		if (token === void 0) return fail$1(new Unauthenticated({
@@ -18719,6 +18720,8 @@ function bearerVerifier(identity, audience) {
 //#region src/directory.ts
 /** How many of an area's operation names its one line carries. */
 const AREA_LINE_NAMES = 10;
+/** RFC 6750 §3's `scope`: scope tokens of printable ASCII but `"` and `\`, split by one space. */
+const SCOPE = /^[\x21\x23-\x5B\x5D-\x7E]+(?: [\x21\x23-\x5B\x5D-\x7E]+)*$/;
 /** An operation's name without its area, where the name starts with it. */
 function leafOf(operation) {
 	const { name, area } = operation;
@@ -18733,19 +18736,29 @@ function toDirectory(catalogue) {
 }
 /**
 * The part of `directory` one person may use: the operations `allows`
-* admits, by area, by name and for `find`. The search keeps the whole
+* admits, by area, by name and for `find`, with the scopes it awaits for
+* some (a scope outside RFC 6750's grammar throws, naming the operation). The search keeps the whole
 * catalogue's word counts, so a word's rarity, and with it the ranking, is
 * the same for everyone; no operation outside the part is named by it.
 */
 function admitted(directory, allows) {
-	const kept = directory.operations.filter((operation) => allows(operation));
+	const kept = [];
+	const scopes = /* @__PURE__ */ new Map();
+	for (const operation of directory.operations) {
+		const admission = allows(operation);
+		if (admission === false) continue;
+		kept.push(operation);
+		if (admission === true) continue;
+		if (!SCOPE.test(admission.scope)) throw new Error(`allows answered the scope ${JSON.stringify(admission.scope)} for "${operation.name}", which is no OAuth scope (printable ASCII but " and \\, words split by one space)`);
+		scopes.set(operation.name, admission.scope);
+	}
 	const keep = new Set(kept);
 	return assembled(kept, {
 		entries: directory.search.entries.filter(({ operation }) => keep.has(operation)),
 		carrying: directory.search.carrying
-	});
+	}, scopes);
 }
-function assembled(operations, search) {
+function assembled(operations, search, scopes = /* @__PURE__ */ new Map()) {
 	const grouped = /* @__PURE__ */ new Map();
 	for (const operation of operations) grouped.set(operation.area, [...grouped.get(operation.area) ?? [], operation]);
 	return {
@@ -18756,7 +18769,8 @@ function assembled(operations, search) {
 			operations: members
 		}])),
 		byName: new Map(operations.map((operation) => [operation.name, operation])),
-		search
+		search,
+		scopes
 	};
 }
 /** An area's one line: the names of its operations, the area left off. */
@@ -18985,7 +18999,8 @@ var TimedOut = class extends TaggedError("TimedOut") {};
 /**
 * Runs the named operation once, as the session's person, through the tool
 * of its kind: a read through `read`, a write through `write`. The program's
-* refusal comes back as a tool error carrying its sentence. A failure is
+* refusal comes back as a tool error carrying its sentence. An omitted input is
+* `{}` for an operation whose input is an object. A failure is
 * reported and answered with the door's own sentence, so a database's words
 * never reach the person; for a write that reached the program, that sentence
 * says the change may have been made. Every write leaves one write event.
@@ -18993,11 +19008,12 @@ var TimedOut = class extends TaggedError("TimedOut") {};
 * A read's answer longer than a page comes in pages, `vervolg` naming the
 * next (`paged`); a write's comes whole, since a write is never run again.
 */
-function call(session, tool, name, input, vervolg) {
+function call(session, tool, name, given, vervolg) {
 	const operation = session.directory.byName.get(name);
 	if (operation === void 0) return succeed$1(unknownOperation(session.directory, name));
 	if (operation.kind !== tool) return succeed$1(refusal(copy$2.wrongTool(name, operation.kind)));
 	const write = operation.kind === "write";
+	const input = given === void 0 && operation.input["type"] === "object" ? {} : given;
 	const strays = strayKeys(operation.input, input);
 	if (strays.length) {
 		const refused = refusal(copy$2.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
@@ -19104,7 +19120,7 @@ function pagingFields(input) {
 	const fields = properties(input).flatMap(([name, child]) => [...PAGING.has(name) ? [name] : [], ...properties(child).flatMap(([inner]) => PAGING.has(inner) ? [`${name}.${inner}`] : [])]);
 	return [...new Set(fields)];
 }
-function described(operation, part) {
+function described(operation, scope, part) {
 	const output = operation.output ?? null;
 	if (part === "output") {
 		const whole = JSON.stringify(output);
@@ -19122,6 +19138,7 @@ function described(operation, part) {
 		name: operation.name,
 		area: operation.area,
 		kind: operation.kind,
+		...scope === void 0 ? {} : { scope },
 		destructive: operation.destructive,
 		idempotent: operation.idempotent,
 		description: operation.description,
@@ -19139,7 +19156,7 @@ function described(operation, part) {
 function describe(session, name, part, vervolg) {
 	const operation = session.directory.byName.get(name);
 	if (operation === void 0) return succeed$1(unknownOperation(session.directory, name));
-	return paged(session.pages, pageKey(String(session.claims.sub), "describe", name, part ?? null), vervolg, sync(() => described(operation, part)));
+	return paged(session.pages, pageKey(String(session.claims.sub), "describe", name, part ?? null), vervolg, sync(() => described(operation, session.directory.scopes.get(name), part)));
 }
 function findAnswer(directory, words) {
 	if (new Set(stems(words)).size > 20) return refusal(copy$2.tooManyWords(20));
@@ -19297,25 +19314,53 @@ function refusalServer(sentence) {
 //#endregion
 //#region src/door.ts
 var Refused = class extends TaggedError("Refused") {};
+/** A `read` or `write` of an operation the person may run only once their login carries `scopes`. */
+var ScopeAwaited = class extends TaggedError("ScopeAwaited") {};
 /**
 * The host's `actorFor`, or its `allows`, failed: the token verified, but its
 * person could not be looked up.
 */
 var PersonUnreachable = class extends TaggedError("PersonUnreachable") {};
 /**
-* Whether a request's body is JSON-RPC, as every MCP message is: a refused
-* person's program is answered in MCP, so it can show the refusal, and
-* anything else with a plain 403.
+* A request body's JSON-RPC messages, as every MCP message is, or undefined
+* for a body that is not JSON-RPC: a refused person's program is answered in
+* MCP, so it can show the refusal, and anything else with a plain 403.
 */
-async function isJsonRpc(request) {
+async function jsonRpcMessages(request) {
 	let body;
 	try {
 		body = JSON.parse(await request.clone().text());
 	} catch {
-		return false;
+		return;
 	}
 	const messages = Array.isArray(body) ? body : [body];
-	return messages.length > 0 && messages.every((message) => typeof message === "object" && message !== null && "jsonrpc" in message && message.jsonrpc === "2.0");
+	return messages.length > 0 && messages.every((message) => typeof message === "object" && message !== null && "jsonrpc" in message && message.jsonrpc === "2.0") ? messages : void 0;
+}
+/**
+* The scopes the `read` and `write` calls among `messages` await: those
+* `scopes` holds for the operations they name. The door is stateless, so each
+* POST carries its own messages and is answered 403 before any of them runs.
+* The SDK's own per-tool `scopeChallenge` was not taken: it names the metadata
+* document only from an `AuthInfo`, whose `clientId` no koppeling token carries.
+*/
+function scopesAwaited(messages, scopes) {
+	const awaited = messages.flatMap((message) => {
+		if (!isSpecType.CallToolRequest(message)) return [];
+		const { name: tool, arguments: args } = message.params;
+		const operation = args?.["name"];
+		const scope = (tool === "read" || tool === "write") && typeof operation === "string" ? scopes.get(operation) : void 0;
+		return scope === void 0 ? [] : scope.split(" ");
+	});
+	return [...new Set(awaited)];
+}
+/**
+* `text` as an RFC 6750 §3 `error_description`, which allows one or more of
+* printable ASCII but `"` and `\`: letters lose their accents, anything else
+* is dropped, and a text with nothing left gives no parameter.
+*/
+function errorDescription(text) {
+	const kept = text.normalize("NFKD").replaceAll(/\s+/g, " ").replaceAll(/[^\x20\x21\x23-\x5B\x5D-\x7E]/g, "").trim();
+	return kept ? [`error_description="${kept}"`] : [];
 }
 const refusalResponse = (status, sentence, headers = {}) => Response.json({ error: sentence }, {
 	status,
@@ -19371,28 +19416,39 @@ function koppeling(options) {
 			instructions: instructionsFor(options.glossary, directory)
 		};
 	};
-	/**
-	* Only POST: the door keeps no session, so it has no stream to open on a GET
-	* and none to end on a DELETE.
-	*/
-	const handle = (request) => request.method !== "POST" ? Promise.resolve(new Response(null, {
-		status: 405,
-		headers: { Allow: "POST" }
-	})) : runPromise(verify(request).pipe(flatMap$1((claims) => tryPromise({
-		try: async () => options.actorFor(claims),
-		catch: (cause) => new PersonUnreachable({ cause })
-	}).pipe(flatMap$1((decision) => "refusal" in decision ? fail$1(new Refused({ sentence: decision.refusal })) : try_({
-		try: () => personal(decision.allows),
-		catch: (cause) => new PersonUnreachable({ cause })
-	}).pipe(flatMap$1((part) => promise(() => serve(request, () => mcpServer({
-		directory: part.directory,
-		actor: decision.actor,
-		claims,
-		report,
-		pages
-	}, part.instructions)))))))), catchTags({
-		Unauthenticated: ({ sentence, tokenGiven }) => succeed$1(refusalResponse(401, sentence, { "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}"${tokenGiven ? ", error=\"invalid_token\"" : ""}` })),
-		Refused: ({ sentence }) => promise(async () => await isJsonRpc(request) ? serve(request, () => refusalServer(sentence)) : refusalResponse(403, sentence)),
+	/** A `WWW-Authenticate` challenge (RFC 6750 §3) naming the metadata document, then `params`. */
+	const challenge = (...params) => ({ "WWW-Authenticate": [`Bearer resource_metadata="${metadataUrl}"`, ...params].join(", ") });
+	/** One POST, verified and answered as its person, or refused with the status that says why. */
+	const answer = (request) => gen(function* () {
+		const claims = yield* verify(request);
+		const decision = yield* tryPromise({
+			try: async () => options.actorFor(claims),
+			catch: (cause) => new PersonUnreachable({ cause })
+		});
+		if ("refusal" in decision) return yield* new Refused({ sentence: decision.refusal });
+		if ("signIn" in decision) return yield* new Unauthenticated({
+			sentence: decision.signIn,
+			tokenGiven: true
+		});
+		const part = yield* try_({
+			try: () => personal(decision.allows),
+			catch: (cause) => new PersonUnreachable({ cause })
+		});
+		if (part.directory.scopes.size > 0) {
+			const scopes = scopesAwaited((yield* promise(() => jsonRpcMessages(request))) ?? [], part.directory.scopes);
+			if (scopes.length > 0) return yield* new ScopeAwaited({ scopes });
+		}
+		return yield* promise(() => serve(request, () => mcpServer({
+			directory: part.directory,
+			actor: decision.actor,
+			claims,
+			report,
+			pages
+		}, part.instructions)));
+	}).pipe(catchTags({
+		Unauthenticated: ({ sentence, tokenGiven }) => succeed$1(refusalResponse(401, sentence, tokenGiven ? challenge("error=\"invalid_token\"", ...errorDescription(sentence)) : challenge())),
+		ScopeAwaited: ({ scopes }) => succeed$1(refusalResponse(403, copy$2.scopeAwaited(scopes), challenge("error=\"insufficient_scope\"", `scope="${scopes.join(" ")}"`))),
+		Refused: ({ sentence }) => promise(async () => await jsonRpcMessages(request) === void 0 ? refusalResponse(403, sentence) : serve(request, () => refusalServer(sentence))),
 		PersonUnreachable: ({ cause }) => report({
 			kind: "failure",
 			operation: null,
@@ -19403,7 +19459,15 @@ function koppeling(options) {
 			operation: null,
 			cause
 		}).pipe(as(refusalResponse(503, copy$2.keysUnreachable)))
-	})));
+	}));
+	/**
+	* Only POST: the door keeps no session, so it has no stream to open on a GET
+	* and none to end on a DELETE.
+	*/
+	const handle = (request) => request.method === "POST" ? runPromise(answer(request)) : Promise.resolve(new Response(null, {
+		status: 405,
+		headers: { Allow: "POST" }
+	}));
 	const metadata = (request) => request.method === "GET" || request.method === "HEAD" ? Response.json(document) : new Response(null, {
 		status: 405,
 		headers: { Allow: "GET, HEAD" }
