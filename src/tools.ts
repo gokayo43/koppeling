@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import { refusal, type Answer } from "./answer";
 import type { Operation } from "./catalogue";
 import { copy } from "./copy";
-import type { Directory } from "./directory";
+import type { Directory, Offered } from "./directory";
 import { find, FIND_MAX_LENGTH, FIND_MAX_WORDS, stems } from "./find";
 import type { Json, JsonObject, JsonSchema } from "./json";
 import { PAGE_SIZE, pageKey, paged, type Produced } from "./pages";
@@ -82,11 +82,7 @@ function pagingFields(input: JsonSchema): string[] {
   return [...new Set(fields)];
 }
 
-function described(
-  operation: Operation<never>,
-  scope: string | undefined,
-  part: "output" | undefined,
-): Produced {
+function described({ operation, awaits }: Offered<never>, part: "output" | undefined): Produced {
   const output = operation.output ?? null;
   if (part === "output") {
     const whole = JSON.stringify(output);
@@ -98,7 +94,7 @@ function described(
     name: operation.name,
     area: operation.area,
     kind: operation.kind,
-    ...(scope === undefined ? {} : { scope }),
+    ...(awaits.length > 0 ? { scope: awaits.join(" ") } : {}),
     destructive: operation.destructive,
     idempotent: operation.idempotent,
     description: operation.description,
@@ -117,13 +113,13 @@ function describe<Actor>(
   part: "output" | undefined,
   vervolg: string | undefined,
 ): Effect.Effect<Answer> {
-  const operation = session.directory.byName.get(name);
-  if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
+  const offered = session.directory.byName.get(name);
+  if (offered === undefined) return Effect.succeed(unknownOperation(session.directory, name));
   return paged(
     session.pages,
     pageKey(String(session.claims.sub), "describe", name, part ?? null),
     vervolg,
-    Effect.sync(() => described(operation, session.directory.scopes.get(name), part)),
+    Effect.sync(() => described(offered, part)),
   );
 }
 

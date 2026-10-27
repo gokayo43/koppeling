@@ -36,6 +36,12 @@ export interface Operation<Actor> {
   readonly idempotent: boolean;
   /** Every object that names its keys is closed: a call carrying any other key is refused. */
   readonly input: JsonSchema;
+  /**
+   * What the operation runs with when a call leaves its input out: `undefined`
+   * where the program takes no input or accepts an omitted one, `{}` where it
+   * takes an object and nothing else.
+   */
+  readonly omittedInput: Json | undefined;
   readonly output: JsonSchema | undefined;
   /**
    * Runs the operation once, as `actor`, through the program's own code path,

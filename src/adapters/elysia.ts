@@ -103,6 +103,7 @@ export function fromElysia<Actor>(app: AnyElysia, options: ElysiaOptions<Actor>)
       ...lineOf(meta.description ?? description(hooks), method, named, schemas),
       ...hints(method, meta),
       input: inputSchema(schemas, carriesBody(method)),
+      omittedInput: {},
       output: responseSchema(app, hooks, owner),
       run: (actor, input, signal) =>
         request(
@@ -400,12 +401,11 @@ async function request(
   input: Json | undefined,
   signal: AbortSignal,
 ): Promise<Outcome> {
-  const parts = input === undefined ? {} : input;
-  if (!isJsonObject(parts)) return { refusal: copy.inputNotObject };
-  const url = urlOf(target, parts["params"], parts["query"]);
+  if (!isJsonObject(input)) return { refusal: copy.inputNotObject };
+  const url = urlOf(target, input["params"], input["query"]);
   if ("refusal" in url) return url;
   const headers = new Headers(target.headers);
-  const body = parts["body"];
+  const body = input["body"];
   const sendsBody = body !== undefined && carriesBody(target.method);
   if (sendsBody) headers.set("content-type", "application/json");
   const response = await app.handle(

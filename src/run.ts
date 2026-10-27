@@ -56,9 +56,9 @@ class TimedOut extends Data.TaggedError("TimedOut") {}
  * of its kind: a read through `read`, a write through `write`. The program's
  * refusal comes back as a tool error carrying its sentence. An operation the
  * person may run only once their login carries a scope is refused before
- * anything runs; the door answers such a call 403 before it reaches here, and
- * this holds for a call that check read differently. An omitted input
- * is `{}` for an operation whose input is an object. A failure is reported and
+ * anything runs: the second layer behind the door's HTTP 403, which answers
+ * such a call before it reaches here. An omitted input runs as the
+ * operation's `omittedInput`. A failure is reported and
  * answered with the door's own sentence, so a database's words never reach
  * the person; for a write that reached the program, that sentence says the
  * change may have been made. Every write leaves one write event.
@@ -73,13 +73,13 @@ export function call<Actor>(
   given: Json | undefined,
   vervolg?: string,
 ): Effect.Effect<Answer> {
-  const operation = session.directory.byName.get(name);
-  if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
-  const scope = session.directory.scopes.get(name);
-  if (scope !== undefined) return Effect.succeed(refusal(copy.scopeAwaited(scope.split(" "))));
+  const offered = session.directory.byName.get(name);
+  if (offered === undefined) return Effect.succeed(unknownOperation(session.directory, name));
+  const { operation, awaits } = offered;
+  if (awaits.length > 0) return Effect.succeed(refusal(copy.scopeAwaited(awaits)));
   if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
   const write = operation.kind === "write";
-  const input = given === undefined && operation.input["type"] === "object" ? {} : given;
+  const input = given === undefined ? operation.omittedInput : given;
   const strays = strayKeys(operation.input, input);
   if (strays.length) {
     const refused = refusal(

@@ -8,6 +8,7 @@ import {
   fromTrpcRouter,
   koppeling,
   type ActorDecision,
+  type Admission,
   type Identity,
   type Json,
   type KoppelingEvent,
@@ -476,6 +477,8 @@ test("an operation under a scope is listed and described with it, and its read o
   const listed = await client.callTool({ name: "list", arguments: { area: "orders" } });
   expect(JSON.stringify(listed.structuredContent)).toContain('"orders.cancel"');
   expect(JSON.stringify(listed.structuredContent)).toContain('"orders.get"');
+  const found = await client.callTool({ name: "find", arguments: { words: "order annuleren" } });
+  expect(JSON.stringify(found.structuredContent)).toContain('"orders.cancel"');
   const described = await client.callTool({ name: "describe", arguments: { name: "orders.get" } });
   expect(described.structuredContent).toMatchObject({ name: "orders.get", scope: "orders:lezen" });
   const unscoped = await client.callTool({
@@ -531,27 +534,94 @@ test("a scope outside RFC 6750's characters answers 503 and reports which operat
   expect(String(events[0]?.kind === "failure" && events[0].cause)).toContain('"orders.get"');
 });
 
-test("at a door that awaits a scope, a tools/call that is not well formed is refused with 400, not left to the SDK's reading", async () => {
-  // The likeliest wrong skips what it cannot read and serves it, so the
-  // scope check rests on the SDK reading the call as the door failed to.
+test("an allows answer that is neither true, false nor a scope string answers 503 and runs nothing", async () => {
+  // The likeliest wrong reads anything but true and false as { scope }, so
+  // { scope: undefined } (a lookup missing its key) stores no scope and the
+  // operation runs, and 0 is listed and run where the old filter hid it.
   using idp = await identityProvider();
-  const { door, invoked, events } = warehouseDoor(() => ({
-    actor: warehouseAdmin,
-    allows: (operation) =>
-      operation.name === "orders.cancel" ? { scope: "orders:schrijven" } : true,
-  }));
   const token = await idp.token();
-  for (const params of [
-    undefined,
-    { name: "write", arguments: { name: ["orders.cancel"], input: { orderId: 1 } } },
-    { name: 7, arguments: { name: "orders.cancel" } },
-  ]) {
+  const answers: readonly unknown[] = [{ scope: undefined }, 0];
+  for (const answer of answers) {
+    const { door, invoked, events } = warehouseDoor(() => ({
+      actor: warehouseAdmin,
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- an answer its type forbids, as a cast or a missing key gives one
+      allows: (operation) => (operation.area === "suppliers" ? (answer as Admission) : true),
+    }));
     const response = await door.handle(
-      jsonRpcPost(token, { method: "tools/call", ...(params === undefined ? {} : { params }) }),
+      jsonRpcPost(token, {
+        method: "tools/call",
+        params: {
+          name: "write",
+          arguments: { name: "suppliers.delete", input: { supplierId: 1 } },
+        },
+      }),
     );
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: copy.malformedCall });
+
+    expect(response.status).toBe(503);
+    expect(invoked).toEqual([]);
+    expect(events).toMatchObject([{ kind: "failure", operation: null }]);
+    expect(String(events[0]?.kind === "failure" && events[0].cause)).toContain('"suppliers.');
   }
+});
+
+test("a body past the SDK's 4 MiB is answered 413 having read no further, at a door that awaits a scope and for a refused person alike", async () => {
+  // The likeliest wrong reads the whole body before the SDK's own limit
+  // applies, so an endless body holds the door's memory until it dies; this one
+  // ends at 16 MiB so the unbounded read finishes.
+  using idp = await identityProvider();
+  const token = await idp.token();
+  const CHUNK = 64 * 1024;
+  const decisions: readonly (() => ActorDecision<WarehouseActor>)[] = [
+    () => ({
+      actor: warehouseAdmin,
+      allows: (operation) =>
+        operation.name === "orders.cancel" ? { scope: "orders:schrijven" } : true,
+    }),
+    () => ({ refusal: "Je hebt geen toegang tot het magazijn." }),
+  ];
+  for (const decide of decisions) {
+    const { door } = warehouseDoor(decide);
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= 16 * 1024 * 1024) return controller.close();
+        pulled += CHUNK;
+        controller.enqueue(new Uint8Array(CHUNK).fill(0x20));
+      },
+    });
+    const response = await door.handle(
+      new Request(RESOURCE, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: endless,
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    expect(pulled).toBeLessThanOrEqual(4 * 1024 * 1024 + 4 * CHUNK);
+  }
+});
+
+test("a body that is no JSON reaches the SDK as its text, which answers it in its own words", async () => {
+  using idp = await identityProvider();
+  const { door, invoked } = warehouseDoor();
+  const response = await door.handle(
+    new Request(RESOURCE, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${await idp.token()}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: '{"jsonrpc": "2.0", "id": 1, "method": "tools/ca',
+    }),
+  );
+
+  expect(response.status).toBe(400);
+  expect(await response.json()).toMatchObject({ error: { code: -32700 } });
   expect(invoked).toEqual([]);
-  expect(events).toEqual([]);
 });

@@ -52,6 +52,7 @@ function longDoor() {
         ),
       },
     },
+    omittedInput: {},
     run: async () => {
       ran.push(name);
       return { value: value() };
@@ -185,7 +186,7 @@ test("describe answers the input whole and a long output schema by its length, a
     name: "describe",
     arguments: { name: "catalog.schema" },
   });
-  const output = directory.byName.get("catalog.schema")?.output;
+  const output = directory.byName.get("catalog.schema")?.operation.output;
   const outputText = JSON.stringify(output);
 
   expect(blocks(described).join("").length).toBeLessThan(PAGE_SIZE);
@@ -259,6 +260,7 @@ test("an answer carries its value as structured content only under a quarter of 
     destructive: false,
     idempotent: true,
     input: { schema: { type: "object", properties: {} } },
+    omittedInput: {},
     output: undefined,
     run: async () => ({ value: "x".repeat(length - 2) }),
   });
