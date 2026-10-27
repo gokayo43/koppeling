@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 
+import { initTRPC } from "@trpc/server";
 import { Effect, Fiber, HashMap, Logger, TestClock, TestContext } from "effect";
 import { Elysia } from "elysia";
+import { z } from "zod";
 
 import { copy } from "../src/copy";
 import { toDirectory } from "../src/directory";
 import { reporter } from "../src/events";
-import { fromElysia } from "../src/index";
+import { fromElysia, fromTrpcRouter } from "../src/index";
 import { Pages } from "../src/pages";
 import { call, OPERATION_TIME_LIMIT } from "../src/run";
 import { credential } from "./fixtures/api";
@@ -136,4 +138,35 @@ test("an operation that does not finish within the time limit is given up on, an
       outcome: "unknown",
     },
   ]);
+});
+
+test("an omitted input is {} for an operation whose input is an object, and stays omitted for any other", async () => {
+  // The likeliest wrong validates nothing in place of {}, so an operation
+  // whose every field is optional is refused for being left out.
+  const t = initTRPC.context<object>().create();
+  const seen: unknown[] = [];
+  const router = t.router({
+    optional: t.procedure
+      .input(z.object({ entity: z.string().optional() }))
+      .query(({ input }) => (seen.push(input), "optional")),
+    required: t.procedure.input(z.object({ entity: z.string() })).query(() => "required"),
+    text: t.procedure.input(z.string().optional()).query(({ input }) => (seen.push(input), "text")),
+    none: t.procedure.query(() => "none"),
+  });
+  const { session } = sessionOf(
+    toDirectory(fromTrpcRouter(router, { contextFor: () => ({}) })),
+    null,
+    claims,
+  );
+  const read = (name: string) => Effect.runPromise(call(session, "read", name, undefined));
+
+  expect((await read("optional")).structured).toEqual({ result: "optional" });
+  expect((await read("text")).structured).toEqual({ result: "text" });
+  expect((await read("none")).structured).toEqual({ result: "none" });
+  expect(seen).toEqual([{}, undefined]);
+  const missing = await read("required");
+  expect(missing.isError).toBe(true);
+  expect(missing.structured).toMatchObject({
+    details: { issues: [{ path: ["entity"] }] },
+  });
 });

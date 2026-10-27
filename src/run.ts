@@ -54,7 +54,8 @@ class TimedOut extends Data.TaggedError("TimedOut") {}
 /**
  * Runs the named operation once, as the session's person, through the tool
  * of its kind: a read through `read`, a write through `write`. The program's
- * refusal comes back as a tool error carrying its sentence. A failure is
+ * refusal comes back as a tool error carrying its sentence. An omitted input is
+ * `{}` for an operation whose input is an object. A failure is
  * reported and answered with the door's own sentence, so a database's words
  * never reach the person; for a write that reached the program, that sentence
  * says the change may have been made. Every write leaves one write event.
@@ -66,13 +67,14 @@ export function call<Actor>(
   session: Session<Actor>,
   tool: Kind,
   name: string,
-  input: Json | undefined,
+  given: Json | undefined,
   vervolg?: string,
 ): Effect.Effect<Answer> {
   const operation = session.directory.byName.get(name);
   if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
   if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
   const write = operation.kind === "write";
+  const input = given === undefined && operation.input["type"] === "object" ? {} : given;
   const strays = strayKeys(operation.input, input);
   if (strays.length) {
     const refused = refusal(

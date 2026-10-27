@@ -56,7 +56,7 @@ export const copy = {
     run: {
       name: "De naam van de operatie, precies zoals list of find haar noemt.",
       input:
-        "De invoer volgens het invoerschema dat describe geeft. Laat weg als de operatie geen invoer heeft.",
+        "De invoer volgens het invoerschema dat describe geeft. Weglaten is hetzelfde als {} wanneer dat schema een object is, dus laat haar weg als de operatie geen invoer heeft of geen veld verplicht is.",
       vervolg:
         "Het vervolg dat het vorige deel van een lang antwoord noemt, met verder precies dezelfde vraag. Laat weg voor het eerste deel.",
     },
