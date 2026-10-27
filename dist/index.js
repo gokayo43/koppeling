@@ -1,4 +1,4 @@
-import { McpServer, WebStandardStreamableHTTPServerTransport, createMcpHandler, fromJsonSchema, getOAuthProtectedResourceMetadataUrl, isLegacyRequest, isSpecType } from "@modelcontextprotocol/server";
+import { DEFAULT_MAX_REQUEST_BODY_SIZE, McpServer, WebStandardStreamableHTTPServerTransport, createMcpHandler, fromJsonSchema, getOAuthProtectedResourceMetadataUrl, isLegacyRequest, isSpecType, readRequestBody } from "@modelcontextprotocol/server";
 import { createRemoteJWKSet, errors, jwtVerify } from "jose";
 //#region src/json.ts
 function isJsonObject(value) {
@@ -340,7 +340,7 @@ const copy$2 = {
 		},
 		run: {
 			name: "De naam van de operatie, precies zoals list of find haar noemt.",
-			input: "De invoer volgens het invoerschema dat describe geeft. Weglaten is hetzelfde als {} wanneer dat schema een object is, dus laat haar weg als de operatie geen invoer heeft of geen veld verplicht is.",
+			input: "De invoer volgens het invoerschema dat describe geeft. Laat weg als de operatie geen invoer heeft, als het programma weglaten toestaat, of als de invoer een object is waarin geen veld verplicht is: dan telt weglaten als {}.",
 			vervolg: "Het vervolg dat het vorige deel van een lang antwoord noemt, met verder precies dezelfde vraag. Laat weg voor het eerste deel."
 		}
 	},
@@ -375,7 +375,8 @@ const copy$2 = {
 	noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",
 	badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
 	scopeAwaited: (scopes) => `Deze operatie vraagt een inlog met toegang tot ${quoted(scopes)}. Log opnieuw in vanuit het programma en geef die toegang; er is niets uitgevoerd.`,
-	malformedCall: "Deze aanroep van een gereedschap is niet goed gevormd: hij noemt het gereedschap en, voor read en write, de operatie elk als tekst. Er is niets uitgevoerd.",
+	bodyTooLarge: (limit) => `De vraag is groter dan ${limit / 1048576} MiB en is daarom niet gelezen. Er is niets uitgevoerd.`,
+	bodyUnreadable: "De vraag kon niet helemaal worden gelezen. Er is niets uitgevoerd.",
 	keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw.",
 	personUnreachable: "De inlog is gecontroleerd, maar wie je bent kan nu niet worden opgezocht. Probeer het later opnieuw."
 };
@@ -17888,9 +17889,9 @@ function convert(schema, side) {
 /**
 * An Effect input whose encoded side is `X | undefined` (`Schema.UndefinedOr`,
 * or a default filled in when the input is left out) says the input may be
-* left out, which the door's `call` already allows. JSON Schema has no
-* `undefined`, and `JSONSchema.make` writes the encoded side, so the schema the
-* door writes is the encoded `X`'s.
+* left out, which `acceptsOmitted` reads from the program's validator. JSON
+* Schema has no `undefined`, and `JSONSchema.make` writes the encoded side, so
+* the schema the door writes is the encoded `X`'s.
 */
 function definedPart(schema) {
 	let ast = schema.ast;
@@ -17921,6 +17922,34 @@ function withoutDroppedOpenness(json) {
 	if (isJsonArray(json)) return json.map((item) => withoutDroppedOpenness(item));
 	if (!isJsonObject(json)) return json;
 	return Object.fromEntries(Object.entries(json).flatMap(([key, value]) => key === "additionalProperties" && value === true && "properties" in json ? [] : [[key, withoutDroppedOpenness(value)]]));
+}
+/**
+* Whether a program's own validator takes an omitted value, asked through
+* Standard Schema's `validate` as tRPC itself asks it. A validator that
+* answers only later (a `Promise`, for an asynchronous check) is taken to
+* accept it, so the program's own parse decides, as it did before the door
+* chose; one that throws takes it no more than one that answers issues.
+*/
+function acceptsOmitted(schema) {
+	if (typeof schema !== "object" && typeof schema !== "function" || schema === null) return false;
+	const standard = "~standard" in schema ? schema["~standard"] : void 0;
+	if (typeof standard !== "object" || standard === null || !("validate" in standard)) return false;
+	const { validate } = standard;
+	if (typeof validate !== "function") return false;
+	let result;
+	try {
+		result = validate.call(standard, void 0);
+	} catch {
+		return false;
+	}
+	if (result instanceof Promise) return true;
+	return typeof result === "object" && result !== null && !("issues" in result && result.issues);
+}
+/** Whether a schema takes an object and nothing else: an object's, or an `allOf` of such. */
+function takesObject(schema) {
+	if (schema["type"] === "object") return true;
+	const parts = schema["allOf"];
+	return isJsonArray(parts) && parts.length > 0 && parts.every((part) => isJsonObject(part) && takesObject(part));
 }
 /**
 * Several schemas one value must satisfy at once, as one: `allOf` of them, or
@@ -18179,6 +18208,7 @@ function fromElysia(app, options) {
 			...lineOf$1(meta.description ?? description(hooks), method, named, schemas),
 			...hints(method, meta),
 			input: inputSchema(schemas, carriesBody(method)),
+			omittedInput: {},
 			output: responseSchema(app, hooks, owner),
 			run: (actor, input, signal) => request(app, {
 				app,
@@ -18381,12 +18411,11 @@ function ownStore(app, method, path, owner) {
 	return store;
 }
 async function request(app, target, input, signal) {
-	const parts = input === void 0 ? {} : input;
-	if (!isJsonObject(parts)) return { refusal: copy$2.inputNotObject };
-	const url = urlOf(target, parts["params"], parts["query"]);
+	if (!isJsonObject(input)) return { refusal: copy$2.inputNotObject };
+	const url = urlOf(target, input["params"], input["query"]);
 	if ("refusal" in url) return url;
 	const headers = new Headers(target.headers);
-	const body = parts["body"];
+	const body = input["body"];
 	const sendsBody = body !== void 0 && carriesBody(target.method);
 	if (sendsBody) headers.set("content-type", "application/json");
 	const response = await app.handle(new Request(url.href, {
@@ -18559,6 +18588,7 @@ function fromTrpcRouter(router, options) {
 			continue;
 		}
 		const described = allOf(definition.inputs.map((parser) => describeSchema(parser, owner, "input"))) ?? NO_INPUT;
+		const omittable = definition.inputs.length === 0 || definition.inputs.every((parser) => acceptsOmitted(parser));
 		const write = kind === "write";
 		const written = meta.description ?? definition.description;
 		declared.push({
@@ -18570,6 +18600,7 @@ function fromTrpcRouter(router, options) {
 			destructive: meta.destructive ?? write,
 			idempotent: meta.idempotent ?? !write,
 			input: described,
+			omittedInput: !omittable && "schema" in described && takesObject(described.schema) ? {} : void 0,
 			output: definition.output === void 0 ? void 0 : describeSchema(definition.output, owner, "output"),
 			run: (actor, input, signal) => run(actor, path, definition.inputs, input, signal)
 		});
@@ -18718,11 +18749,40 @@ function bearerVerifier(identity, audience) {
 	};
 }
 //#endregion
+//#region src/challenge.ts
+/**
+* The grammar of a bearer challenge (RFC 6750 §3): the `scope` a person's
+* login is asked for, the `error_description` beside an error, and the
+* `WWW-Authenticate` header that carries them.
+*/
+/** One scope token: printable ASCII but space, `"` and `\`. */
+const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
+/** What an `error_description` allows: printable ASCII but `"` and `\`. */
+const OUTSIDE_DESCRIPTION = /[^\x20\x21\x23-\x5B\x5D-\x7E]/g;
+/**
+* A `scope` value's tokens, split by one space; a value that is no such list
+* throws, naming `owner`, so a host learns which answer of its was wrong.
+*/
+function scopeTokens(scope, owner) {
+	const tokens = scope.split(" ");
+	if (!tokens.every((token) => SCOPE_TOKEN.test(token))) throw new Error(`${owner} answered the scope ${JSON.stringify(scope)}, which is no OAuth scope (printable ASCII but " and \\, words split by one space)`);
+	return tokens;
+}
+/**
+* `text` as an `error_description` parameter, which allows one or more of its
+* characters: letters lose their accents, anything else is dropped, and a
+* text with nothing left gives no parameter.
+*/
+function errorDescription(text) {
+	const kept = text.normalize("NFKD").replaceAll(/\s+/g, " ").replaceAll(OUTSIDE_DESCRIPTION, "").trim();
+	return kept ? [`error_description="${kept}"`] : [];
+}
+/** The `WWW-Authenticate` header naming the metadata document at `metadataUrl`, then `params`. */
+const challenge = (metadataUrl, ...params) => ({ "WWW-Authenticate": [`Bearer resource_metadata="${metadataUrl}"`, ...params].join(", ") });
+//#endregion
 //#region src/directory.ts
 /** How many of an area's operation names its one line carries. */
 const AREA_LINE_NAMES = 10;
-/** RFC 6750 §3's `scope`: scope tokens of printable ASCII but `"` and `\`, split by one space. */
-const SCOPE = /^[\x21\x23-\x5B\x5D-\x7E]+(?: [\x21\x23-\x5B\x5D-\x7E]+)*$/;
 /** An operation's name without its area, where the name starts with it. */
 function leafOf(operation) {
 	const { name, area } = operation;
@@ -18730,37 +18790,52 @@ function leafOf(operation) {
 }
 function toDirectory(catalogue) {
 	const { operations } = catalogue;
-	return assembled(operations, searchIndex(operations.map((operation) => ({
+	return assembled(operations.map((operation) => ({
+		operation,
+		awaits: []
+	})), searchIndex(operations.map((operation) => ({
 		operation,
 		leaf: leafOf(operation)
 	}))));
 }
 /**
 * The part of `directory` one person may use: the operations `allows`
-* admits, by area, by name and for `find`, with the scopes it awaits for some
-* (a scope outside RFC 6750's grammar throws, naming the operation). The
-* search keeps the whole catalogue's word counts, so a word's rarity, and with
-* it the ranking, is the same for everyone; no operation outside the part is
-* named by it.
+* admits, by area, by name and for `find`, each with the scope tokens it
+* awaits. An answer that is not exactly `true`, `false` or `{ scope }` with a
+* valid scope throws, naming the operation: a lookup missing its key, or a
+* falsy stand-in for `false`, would otherwise offer and run it. The search
+* keeps the whole catalogue's word counts, so a word's rarity, and with it the
+* ranking, is the same for everyone; no operation outside the part is named
+* by it.
 */
 function admitted(directory, allows) {
 	const kept = [];
-	const scopes = /* @__PURE__ */ new Map();
 	for (const operation of directory.operations) {
 		const admission = allows(operation);
 		if (admission === false) continue;
-		kept.push(operation);
-		if (admission === true) continue;
-		if (!SCOPE.test(admission.scope)) throw new Error(`allows answered the scope ${JSON.stringify(admission.scope)} for "${operation.name}", which is no OAuth scope (printable ASCII but " and \\, words split by one space)`);
-		scopes.set(operation.name, admission.scope);
+		if (admission === true) {
+			kept.push({
+				operation,
+				awaits: []
+			});
+			continue;
+		}
+		const owner = `allows for "${operation.name}"`;
+		const scope = typeof admission === "object" && admission !== null && "scope" in admission ? admission.scope : void 0;
+		if (typeof scope !== "string") throw new Error(`${owner} answered neither true, false nor { scope } with a scope string`);
+		kept.push({
+			operation,
+			awaits: scopeTokens(scope, owner)
+		});
 	}
-	const keep = new Set(kept);
+	const keep = new Set(kept.map(({ operation }) => operation));
 	return assembled(kept, {
 		entries: directory.search.entries.filter(({ operation }) => keep.has(operation)),
 		carrying: directory.search.carrying
-	}, scopes);
+	});
 }
-function assembled(operations, search, scopes = /* @__PURE__ */ new Map()) {
+function assembled(offered, search) {
+	const operations = offered.map(({ operation }) => operation);
 	const grouped = /* @__PURE__ */ new Map();
 	for (const operation of operations) grouped.set(operation.area, [...grouped.get(operation.area) ?? [], operation]);
 	return {
@@ -18770,9 +18845,8 @@ function assembled(operations, search, scopes = /* @__PURE__ */ new Map()) {
 			summary: summaryOf(members.map(leafOf)),
 			operations: members
 		}])),
-		byName: new Map(operations.map((operation) => [operation.name, operation])),
-		search,
-		scopes
+		byName: new Map(offered.map((entry) => [entry.operation.name, entry])),
+		search
 	};
 }
 /** An area's one line: the names of its operations, the area left off. */
@@ -19003,9 +19077,9 @@ var TimedOut = class extends TaggedError("TimedOut") {};
 * of its kind: a read through `read`, a write through `write`. The program's
 * refusal comes back as a tool error carrying its sentence. An operation the
 * person may run only once their login carries a scope is refused before
-* anything runs; the door answers such a call 403 before it reaches here, and
-* this holds for a call that check read differently. An omitted input
-* is `{}` for an operation whose input is an object. A failure is reported and
+* anything runs: the second layer behind the door's HTTP 403, which answers
+* such a call before it reaches here. An omitted input runs as the
+* operation's `omittedInput`. A failure is reported and
 * answered with the door's own sentence, so a database's words never reach
 * the person; for a write that reached the program, that sentence says the
 * change may have been made. Every write leaves one write event.
@@ -19014,13 +19088,13 @@ var TimedOut = class extends TaggedError("TimedOut") {};
 * next (`paged`); a write's comes whole, since a write is never run again.
 */
 function call(session, tool, name, given, vervolg) {
-	const operation = session.directory.byName.get(name);
-	if (operation === void 0) return succeed$1(unknownOperation(session.directory, name));
-	const scope = session.directory.scopes.get(name);
-	if (scope !== void 0) return succeed$1(refusal(copy$2.scopeAwaited(scope.split(" "))));
+	const offered = session.directory.byName.get(name);
+	if (offered === void 0) return succeed$1(unknownOperation(session.directory, name));
+	const { operation, awaits } = offered;
+	if (awaits.length > 0) return succeed$1(refusal(copy$2.scopeAwaited(awaits)));
 	if (operation.kind !== tool) return succeed$1(refusal(copy$2.wrongTool(name, operation.kind)));
 	const write = operation.kind === "write";
-	const input = given === void 0 && operation.input["type"] === "object" ? {} : given;
+	const input = given === void 0 ? operation.omittedInput : given;
 	const strays = strayKeys(operation.input, input);
 	if (strays.length) {
 		const refused = refusal(copy$2.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
@@ -19127,7 +19201,7 @@ function pagingFields(input) {
 	const fields = properties(input).flatMap(([name, child]) => [...PAGING.has(name) ? [name] : [], ...properties(child).flatMap(([inner]) => PAGING.has(inner) ? [`${name}.${inner}`] : [])]);
 	return [...new Set(fields)];
 }
-function described(operation, scope, part) {
+function described({ operation, awaits }, part) {
 	const output = operation.output ?? null;
 	if (part === "output") {
 		const whole = JSON.stringify(output);
@@ -19145,7 +19219,7 @@ function described(operation, scope, part) {
 		name: operation.name,
 		area: operation.area,
 		kind: operation.kind,
-		...scope === void 0 ? {} : { scope },
+		...awaits.length > 0 ? { scope: awaits.join(" ") } : {},
 		destructive: operation.destructive,
 		idempotent: operation.idempotent,
 		description: operation.description,
@@ -19161,9 +19235,9 @@ function described(operation, scope, part) {
 	};
 }
 function describe(session, name, part, vervolg) {
-	const operation = session.directory.byName.get(name);
-	if (operation === void 0) return succeed$1(unknownOperation(session.directory, name));
-	return paged(session.pages, pageKey(String(session.claims.sub), "describe", name, part ?? null), vervolg, sync(() => described(operation, session.directory.scopes.get(name), part)));
+	const offered = session.directory.byName.get(name);
+	if (offered === void 0) return succeed$1(unknownOperation(session.directory, name));
+	return paged(session.pages, pageKey(String(session.claims.sub), "describe", name, part ?? null), vervolg, sync(() => described(offered, part)));
 }
 function findAnswer(directory, words) {
 	if (new Set(stems(words)).size > 20) return refusal(copy$2.tooManyWords(20));
@@ -19320,63 +19394,78 @@ function refusalServer(sentence) {
 }
 //#endregion
 //#region src/door.ts
+/** The host refused the person; `body` decides whether their program is answered in MCP. */
 var Refused = class extends TaggedError("Refused") {};
-/** A `tools/call` whose name or arguments are not well formed, at a door that awaits a scope. */
-var MalformedCall = class extends TaggedError("MalformedCall") {};
 /** A `read` or `write` of an operation the person may run only once their login carries `scopes`. */
 var ScopeAwaited = class extends TaggedError("ScopeAwaited") {};
+/** A body longer than the SDK reads one: nothing past its limit was read. */
+var BodyTooLarge = class extends TaggedError("BodyTooLarge") {};
+/** A body whose stream failed while it was read, as when the client goes away. */
+var BodyUnreadable = class extends TaggedError("BodyUnreadable") {};
 /**
 * The host's `actorFor`, or its `allows`, failed: the token verified, but its
 * person could not be looked up.
 */
 var PersonUnreachable = class extends TaggedError("PersonUnreachable") {};
-/** A request body's JSON values, one per batch entry, or undefined for a body that is not JSON. */
-async function bodyValues(request) {
-	let body;
+/**
+* Reads a request's body once, stopping at the SDK's own limit, so a body the
+* SDK would refuse as too large is never held whole.
+*/
+const readBody = (request) => tryPromise({
+	try: () => readRequestBody(request, DEFAULT_MAX_REQUEST_BODY_SIZE),
+	catch: (cause) => new BodyUnreadable({ cause })
+}).pipe(flatMap$1((read) => read.tooLarge ? fail$1(new BodyTooLarge()) : succeed$1(parsed(read.text))));
+/** A body's text as JSON, or as the text itself where it is empty or no JSON. */
+function parsed(text) {
+	if (!text) return { text };
+	let json;
 	try {
-		body = JSON.parse(await request.clone().text());
+		json = JSON.parse(text);
 	} catch {
-		return;
+		return { text };
 	}
-	return Array.isArray(body) ? body : [body];
+	return { json };
 }
+/** A body's messages: its batch's entries, its one value, or none where it is no JSON. */
+const messagesOf = (body) => {
+	if (!("json" in body)) return [];
+	return Array.isArray(body.json) ? body.json : [body.json];
+};
 /**
 * Whether a body is JSON-RPC, as every MCP message is: a refused person's
 * program is answered in MCP, so it can show the refusal, and anything else
 * with a plain 403.
 */
-const isJsonRpc = (values) => values !== void 0 && values.length > 0 && values.every((value) => typeof value === "object" && value !== null && "jsonrpc" in value && value.jsonrpc === "2.0");
+const isJsonRpc = (messages) => messages.length > 0 && messages.every((message) => typeof message === "object" && message !== null && "jsonrpc" in message && message.jsonrpc === "2.0");
 /**
-* The scopes the `read` and `write` calls among a body's `values` await:
-* those `scopes` holds for the operations they name, or `malformed` for a
-* `tools/call` that is not a well-formed one, which is refused rather than
-* left to the SDK's own reading. The door is stateless, so each POST carries
-* its own messages and is answered 403 before any of them runs; `call` refuses
-* such an operation again where it is dispatched. The SDK's own per-tool
-* `scopeChallenge` was not taken: it names the metadata document only from an
-* `AuthInfo`, whose `clientId` no koppeling token carries.
+* The scope tokens the `read` and `write` calls among `messages` await, from
+* the operations they name in the person's `directory`. The door is stateless,
+* so each POST carries its own messages and is answered 403, a batch whole,
+* before any of them runs; the SDK reads the same parsed body, and `call`
+* refuses such an operation again where it is dispatched. A message this does
+* not read as such a call is served, and the SDK answers it as anywhere. The
+* SDK's own per-tool `scopeChallenge` was not taken: it names the metadata
+* document only from an `AuthInfo`, whose `clientId` no koppeling token carries.
 */
-function scopesAwaited(values, scopes) {
-	const awaited = [];
-	for (const value of values) {
-		if (!(typeof value === "object" && value !== null && "method" in value && value.method === "tools/call")) continue;
-		if (!isSpecType.CallToolRequest(value)) return "malformed";
-		const { name: tool, arguments: args } = value.params;
-		if (tool !== "read" && tool !== "write") continue;
+function scopesAwaited(messages, directory) {
+	const awaited = messages.flatMap((message) => {
+		if (!isSpecType.CallToolRequest(message)) return [];
+		const { name: tool, arguments: args } = message.params;
 		const operation = args?.["name"];
-		if (typeof operation !== "string") return "malformed";
-		awaited.push(...scopes.get(operation)?.split(" ") ?? []);
-	}
+		return (tool === "read" || tool === "write") && typeof operation === "string" ? directory.byName.get(operation)?.awaits ?? [] : [];
+	});
 	return [...new Set(awaited)];
 }
-/**
-* `text` as an RFC 6750 §3 `error_description`, which allows one or more of
-* printable ASCII but `"` and `\`: letters lose their accents, anything else
-* is dropped, and a text with nothing left gives no parameter.
-*/
-function errorDescription(text) {
-	const kept = text.normalize("NFKD").replaceAll(/\s+/g, " ").replaceAll(/[^\x20\x21\x23-\x5B\x5D-\x7E]/g, "").trim();
-	return kept ? [`error_description="${kept}"`] : [];
+/** `request` again with `text` as its body, its length left to the new body. */
+function resent(request, text) {
+	const headers = new Headers(request.headers);
+	headers.delete("content-length");
+	return new Request(request.url, {
+		method: request.method,
+		headers,
+		body: text,
+		signal: request.signal
+	});
 }
 const refusalResponse = (status, sentence, headers = {}) => Response.json({ error: sentence }, {
 	status,
@@ -19385,20 +19474,23 @@ const refusalResponse = (status, sentence, headers = {}) => Response.json({ erro
 /**
 * A 2025-era request (the `initialize` handshake and what follows it) is
 * served the way the portal's door serves Claude Desktop today; a 2026-07-28
-* request goes to the SDK's own per-request handler.
+* request goes to the SDK's own per-request handler. Both read `body` as the
+* door read it; a body that is no JSON goes to them as its text.
 */
-async function serve(request, server) {
-	if (await isLegacyRequest(request)) {
+async function serve(request, body, server) {
+	const parsedBody = "json" in body ? body.json : void 0;
+	const forwarded = "json" in body ? request : resent(request, body.text);
+	if (await isLegacyRequest(forwarded, parsedBody)) {
 		const transport = new WebStandardStreamableHTTPServerTransport({
 			sessionIdGenerator: void 0,
 			enableJsonResponse: true
 		});
 		await server().connect(transport);
-		return transport.handleRequest(request);
+		return transport.handleRequest(forwarded, { parsedBody });
 	}
 	const modern = createMcpHandler(server, { legacy: "reject" });
 	try {
-		return await modern.fetch(request);
+		return await modern.fetch(forwarded, { parsedBody });
 	} finally {
 		await modern.close();
 	}
@@ -19432,16 +19524,18 @@ function koppeling(options) {
 			instructions: instructionsFor(options.glossary, directory)
 		};
 	};
-	/** A `WWW-Authenticate` challenge (RFC 6750 §3) naming the metadata document, then `params`. */
-	const challenge = (...params) => ({ "WWW-Authenticate": [`Bearer resource_metadata="${metadataUrl}"`, ...params].join(", ") });
 	/** One POST, verified and answered as its person, or refused with the status that says why. */
 	const answer = (request) => gen(function* () {
 		const claims = yield* verify(request);
+		const body = yield* readBody(request);
 		const decision = yield* tryPromise({
 			try: async () => options.actorFor(claims),
 			catch: (cause) => new PersonUnreachable({ cause })
 		});
-		if ("refusal" in decision) return yield* new Refused({ sentence: decision.refusal });
+		if ("refusal" in decision) return yield* new Refused({
+			sentence: decision.refusal,
+			body
+		});
 		if ("signIn" in decision) return yield* new Unauthenticated({
 			sentence: decision.signIn,
 			tokenGiven: true
@@ -19450,12 +19544,9 @@ function koppeling(options) {
 			try: () => personal(decision.allows),
 			catch: (cause) => new PersonUnreachable({ cause })
 		});
-		if (part.directory.scopes.size > 0) {
-			const scopes = scopesAwaited((yield* promise(() => bodyValues(request))) ?? [], part.directory.scopes);
-			if (scopes === "malformed") return yield* new MalformedCall();
-			if (scopes.length > 0) return yield* new ScopeAwaited({ scopes });
-		}
-		return yield* promise(() => serve(request, () => mcpServer({
+		const scopes = scopesAwaited(messagesOf(body), part.directory);
+		if (scopes.length > 0) return yield* new ScopeAwaited({ scopes });
+		return yield* promise(() => serve(request, body, () => mcpServer({
 			directory: part.directory,
 			actor: decision.actor,
 			claims,
@@ -19463,10 +19554,11 @@ function koppeling(options) {
 			pages
 		}, part.instructions)));
 	}).pipe(catchTags({
-		Unauthenticated: ({ sentence, tokenGiven }) => succeed$1(refusalResponse(401, sentence, tokenGiven ? challenge("error=\"invalid_token\"", ...errorDescription(sentence)) : challenge())),
-		ScopeAwaited: ({ scopes }) => succeed$1(refusalResponse(403, copy$2.scopeAwaited(scopes), challenge("error=\"insufficient_scope\"", `scope="${scopes.join(" ")}"`))),
-		MalformedCall: () => succeed$1(refusalResponse(400, copy$2.malformedCall)),
-		Refused: ({ sentence }) => promise(async () => isJsonRpc(await bodyValues(request)) ? serve(request, () => refusalServer(sentence)) : refusalResponse(403, sentence)),
+		Unauthenticated: ({ sentence, tokenGiven }) => succeed$1(refusalResponse(401, sentence, tokenGiven ? challenge(metadataUrl, "error=\"invalid_token\"", ...errorDescription(sentence)) : challenge(metadataUrl))),
+		ScopeAwaited: ({ scopes }) => succeed$1(refusalResponse(403, copy$2.scopeAwaited(scopes), challenge(metadataUrl, "error=\"insufficient_scope\"", `scope="${scopes.join(" ")}"`))),
+		BodyTooLarge: () => succeed$1(refusalResponse(413, copy$2.bodyTooLarge(DEFAULT_MAX_REQUEST_BODY_SIZE))),
+		BodyUnreadable: () => succeed$1(refusalResponse(400, copy$2.bodyUnreadable)),
+		Refused: ({ sentence, body }) => isJsonRpc(messagesOf(body)) ? promise(() => serve(request, body, () => refusalServer(sentence))) : succeed$1(refusalResponse(403, sentence)),
 		PersonUnreachable: ({ cause }) => report({
 			kind: "failure",
 			operation: null,
