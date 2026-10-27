@@ -120,8 +120,9 @@ Elysia field.
   runs and with no write event: 403 with `WWW-Authenticate: Bearer
   resource_metadata="<metadata url>", error="insufficient_scope",
   scope="<scope>"` (RFC 6750 §3.1), on which an MCP client signs in again
-  asking for it. A scope outside RFC 6750's characters is a failure, answered
-  as one `allows` throws.
+  asking for it; a batch carrying one such call is refused whole. Any other
+  answer (a scope outside RFC 6750's characters, `{ scope: undefined }`, `0`)
+  is a failure, answered as one `allows` throws.
 - `{ refusal }`: the person may not come in, and their program is told why in
   MCP (see Sign-in).
 - `{ signIn }`: the token verified, but its bearer must go through the sign-in
@@ -137,6 +138,9 @@ The types: `Catalogue<Actor>`, `Operation<Actor>`, `Kind` (`"read" | "write"`),
 `KoppelingOptions<Actor>`, `Koppeling`, `BootReport`, `KoppelingEvent`,
 `WriteOutcome`, `GlossaryOptions`, `ElysiaOptions<Actor>`,
 `TrpcOptions<Router, Actor>`, `Json`, `JsonObject`, `JsonSchema`.
+An `Operation` carries, beside its name, area, kind, description, hints,
+schemas and `run`, its `omittedInput`: what it runs with when a call leaves
+its input out (see below).
 
 ## What an agent sees
 
@@ -170,10 +174,16 @@ answered an `allows`, the person meets only the operations it admits, in the
 outline, `list`, `find` and `describe` alike, and a call to any other is
 refused as a name the door does not have.
 
-`read` and `write` without `input` run an operation whose input schema is an
-object with `{}`, so an operation whose every field is optional runs when its
-input is left out, and one with a required field is refused naming it; any
-other operation gets no input.
+`read` and `write` without `input` run the operation with its `omittedInput`,
+decided once at boot from the program's own validator: nothing where the
+program takes no input or its validator accepts an omitted one (an Effect
+`X | undefined`, a zod `.optional()`, or a validator that answers only
+asynchronously); `{}` where it takes an object, or an `allOf` of objects, and
+nothing else, so an operation whose every field is optional runs when its
+input is left out and one with a required field is refused naming it; nothing
+for any other input, which the program then refuses itself. Every Elysia
+operation runs an omitted input as `{}`: `params`, `query` and `body` all
+left out.
 
 `find` counts a word in each field it meets, by the field's weight (name 3,
 description and area 2, input fields 1) and by how rare its match is; and once
@@ -308,15 +318,16 @@ key rotation costs at most 5 seconds of refused tokens), and checks `iss`
 against `identity.issuer`, `aud` against `resource.url`, `nbf`, and that the
 token carries an `exp` and a `sub`. Only then does it ask `actorFor(claims)`.
 
-| Request                               | Answer                                                                                                                        |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| No bearer                             | 401, `WWW-Authenticate: Bearer resource_metadata="<metadata url>"`                                                            |
-| A bearer that does not verify         | 401, the same header with `error="invalid_token"` and the door's sentence as `error_description`                              |
-| The key set cannot be fetched or read | 503                                                                                                                           |
-| `actorFor` answers `{ signIn }`       | 401, the same header with `error="invalid_token"` and the host's sentence as `error_description`                              |
-| `actorFor` answers `{ refusal }`      | MCP whose instructions and every tool answer the refusal; 403, `{ "error": "<refusal>" }`, for a request that is not JSON-RPC |
-| A `read` or `write` `allows` scoped   | 403, `error="insufficient_scope"` and `scope="<scope>"`, as above                                                             |
-| `actorFor` or `allows` throws         | 503, the door's own sentence; the error is reported                                                                           |
+| Request                                                               | Answer                                                                                                                        |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| No bearer                                                             | 401, `WWW-Authenticate: Bearer resource_metadata="<metadata url>"`                                                            |
+| A bearer that does not verify                                         | 401, the same header with `error="invalid_token"` and the door's sentence as `error_description`                              |
+| The key set cannot be fetched or read                                 | 503                                                                                                                           |
+| A body past 4 MiB (the SDK's limit)                                   | 413, the door's own sentence; nothing past the limit is read                                                                  |
+| `actorFor` answers `{ signIn }`                                       | 401, the same header with `error="invalid_token"` and the host's sentence as `error_description`                              |
+| `actorFor` answers `{ refusal }`                                      | MCP whose instructions and every tool answer the refusal; 403, `{ "error": "<refusal>" }`, for a request that is not JSON-RPC |
+| A `read` or `write` of an operation `allows` answered `{ scope }` for | 403, `error="insufficient_scope"` and `scope="<scope>"`, as above; a batch carrying one is refused whole                      |
+| `actorFor` or `allows` throws                                         | 503, the door's own sentence; the error is reported                                                                           |
 
 The metadata document names the resource, the authorization server, the
 scopes and `bearer_methods_supported: ["header"]`. The door reads no scope

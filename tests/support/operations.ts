@@ -29,6 +29,7 @@ export function sketched(sketches: readonly Sketch[], ran: string[] = []): Catal
           ),
         },
       },
+      omittedInput: {},
       output: undefined,
       run: async () => {
         ran.push(sketch.name);

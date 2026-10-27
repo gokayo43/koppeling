@@ -12,7 +12,7 @@ import {
 } from "../catalogue";
 import { derivedLine, fieldNames } from "../derived";
 import { boundedJson, isJsonObject, toJson, type Json, type JsonObject } from "../json";
-import { allOf, describeSchema, type Described } from "../schema";
+import { acceptsOmitted, allOf, describeSchema, takesObject, type Described } from "../schema";
 
 export interface TrpcOptions<Router extends AnyTRPCRouter, Actor> {
   /** The router's context for one call as `actor`: the same context the UI's requests get. */
@@ -105,6 +105,8 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
     }
     const described =
       allOf(definition.inputs.map((parser) => describeSchema(parser, owner, "input"))) ?? NO_INPUT;
+    const omittable =
+      definition.inputs.length === 0 || definition.inputs.every((parser) => acceptsOmitted(parser));
     const write = kind === "write";
     const written = meta.description ?? definition.description;
     declared.push({
@@ -122,6 +124,8 @@ export function fromTrpcRouter<Router extends AnyTRPCRouter, Actor>(
       destructive: meta.destructive ?? write,
       idempotent: meta.idempotent ?? !write,
       input: described,
+      omittedInput:
+        !omittable && "schema" in described && takesObject(described.schema) ? {} : undefined,
       output:
         definition.output === undefined
           ? undefined

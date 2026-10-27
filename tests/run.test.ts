@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { initTRPC } from "@trpc/server";
-import { Effect, Fiber, HashMap, Logger, TestClock, TestContext } from "effect";
+import { Effect, Fiber, HashMap, Logger, Schema, TestClock, TestContext } from "effect";
 import { Elysia } from "elysia";
 import { z } from "zod";
 
@@ -9,10 +9,17 @@ import { copy } from "../src/copy";
 import { admitted, toDirectory } from "../src/directory";
 import { reporter } from "../src/events";
 import { fromElysia, fromTrpcRouter } from "../src/index";
+import { isJsonObject } from "../src/json";
 import { Pages } from "../src/pages";
 import { call, OPERATION_TIME_LIMIT } from "../src/run";
 import { credential } from "./fixtures/api";
-import { apiCaller, warehouseAdmin, warehouseDirectory, warehousePicker } from "./fixtures/doors";
+import {
+  apiCaller,
+  apiDirectory,
+  warehouseAdmin,
+  warehouseDirectory,
+  warehousePicker,
+} from "./fixtures/doors";
 import { sketched } from "./support/operations";
 import { sessionOf } from "./support/session";
 
@@ -197,4 +204,45 @@ test("a read or write of an operation awaiting a scope is refused where it is di
   expect(read).toEqual({ text: copy.scopeAwaited(["orders:lezen"]), isError: true });
   expect(ran).toEqual([]);
   expect(events).toEqual([]);
+});
+
+test("an omitted input runs with what the program takes: nothing where it accepts nothing, {} where it takes only an object", async () => {
+  // The likeliest wrong re-derives the default from the shown schema, which
+  // has lost that an input may be left out: an omittable object is then run
+  // with {} and refused for its required field, a stack of object inputs
+  // (allOf, no top-level type) is run with nothing, and a procedure with no
+  // input starts receiving {}.
+  const t = initTRPC.context<object>().create();
+  const raw: unknown[] = [];
+  const seen: unknown[] = [];
+  const router = t.router({
+    undefinedOr: t.procedure
+      .input(Schema.standardSchemaV1(Schema.UndefinedOr(Schema.Struct({ page: Schema.Int }))))
+      .query(({ input }) => (seen.push(input), "undefinedOr")),
+    zodOptional: t.procedure
+      .input(z.object({ page: z.number() }).optional())
+      .query(({ input }) => (seen.push(input), "zodOptional")),
+    stacked: t.procedure
+      .input(z.object({ a: z.string().optional() }))
+      .input(z.object({ b: z.string().optional() }))
+      .query(({ input }) => (seen.push(input), "stacked")),
+    none: t.procedure
+      .use(async ({ getRawInput, next }) => (raw.push(await getRawInput()), next()))
+      .query(() => "none"),
+  });
+  const catalogue = fromTrpcRouter(router, { contextFor: () => ({}) });
+  const { session } = sessionOf(toDirectory(catalogue), null, claims);
+  const read = (name: string) => Effect.runPromise(call(session, "read", name, undefined));
+
+  for (const name of ["undefinedOr", "zodOptional", "stacked", "none"]) {
+    expect((await read(name)).structured).toEqual({ result: name });
+  }
+  expect(seen).toEqual([undefined, undefined, {}]);
+  expect(raw).toEqual([undefined]);
+  expect(
+    Object.fromEntries(catalogue.operations.map(({ name, omittedInput }) => [name, omittedInput])),
+  ).toEqual({ none: undefined, stacked: {}, undefinedOr: undefined, zodOptional: undefined });
+  expect(apiDirectory().operations.every(({ omittedInput }) => isJsonObject(omittedInput))).toBe(
+    true,
+  );
 });
