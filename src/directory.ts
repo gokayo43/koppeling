@@ -41,10 +41,11 @@ export function toDirectory<Actor>(catalogue: Catalogue<Actor>): Directory<Actor
 
 /**
  * The part of `directory` one person may use: the operations `allows`
- * admits, by area, by name and for `find`, with the scopes it awaits for
- * some (a scope outside RFC 6750's grammar throws, naming the operation). The search keeps the whole
- * catalogue's word counts, so a word's rarity, and with it the ranking, is
- * the same for everyone; no operation outside the part is named by it.
+ * admits, by area, by name and for `find`, with the scopes it awaits for some
+ * (a scope outside RFC 6750's grammar throws, naming the operation). The
+ * search keeps the whole catalogue's word counts, so a word's rarity, and with
+ * it the ranking, is the same for everyone; no operation outside the part is
+ * named by it.
  */
 export function admitted<Actor>(
   directory: Directory<Actor>,

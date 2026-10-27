@@ -54,11 +54,11 @@ class TimedOut extends Data.TaggedError("TimedOut") {}
 /**
  * Runs the named operation once, as the session's person, through the tool
  * of its kind: a read through `read`, a write through `write`. The program's
- * refusal comes back as a tool error carrying its sentence. An omitted input is
- * `{}` for an operation whose input is an object. A failure is
- * reported and answered with the door's own sentence, so a database's words
- * never reach the person; for a write that reached the program, that sentence
- * says the change may have been made. Every write leaves one write event.
+ * refusal comes back as a tool error carrying its sentence. An omitted input
+ * is `{}` for an operation whose input is an object. A failure is reported and
+ * answered with the door's own sentence, so a database's words never reach
+ * the person; for a write that reached the program, that sentence says the
+ * change may have been made. Every write leaves one write event.
  *
  * A read's answer longer than a page comes in pages, `vervolg` naming the
  * next (`paged`); a write's comes whole, since a write is never run again.
