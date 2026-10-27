@@ -6,13 +6,14 @@ import { Elysia } from "elysia";
 import { z } from "zod";
 
 import { copy } from "../src/copy";
-import { toDirectory } from "../src/directory";
+import { admitted, toDirectory } from "../src/directory";
 import { reporter } from "../src/events";
 import { fromElysia, fromTrpcRouter } from "../src/index";
 import { Pages } from "../src/pages";
 import { call, OPERATION_TIME_LIMIT } from "../src/run";
 import { credential } from "./fixtures/api";
 import { apiCaller, warehouseAdmin, warehouseDirectory, warehousePicker } from "./fixtures/doors";
+import { sketched } from "./support/operations";
 import { sessionOf } from "./support/session";
 
 const claims = { sub: "person-7", name: "Beheerder Een", via: "Claude" };
@@ -169,4 +170,31 @@ test("an omitted input is {} for an operation whose input is an object, and stay
   expect(missing.structured).toMatchObject({
     details: { issues: [{ path: ["entity"] }] },
   });
+});
+
+test("a read or write of an operation awaiting a scope is refused where it is dispatched, running nothing and logging no write", async () => {
+  // The likeliest wrong leaves the refusal to the door's HTTP pre-check alone,
+  // so a call that check reads differently from the MCP server still runs.
+  const ran: string[] = [];
+  const directory = admitted(
+    toDirectory(
+      sketched(
+        [
+          { name: "orders.cancel", kind: "write" },
+          { name: "orders.get", kind: "read" },
+        ],
+        ran,
+      ),
+    ),
+    (operation) => ({ scope: operation.kind === "write" ? "orders:schrijven" : "orders:lezen" }),
+  );
+  const { session, events } = sessionOf(directory, null, claims);
+
+  const write = await Effect.runPromise(call(session, "write", "orders.cancel", {}));
+  const read = await Effect.runPromise(call(session, "read", "orders.get", {}));
+
+  expect(write).toEqual({ text: copy.scopeAwaited(["orders:schrijven"]), isError: true });
+  expect(read).toEqual({ text: copy.scopeAwaited(["orders:lezen"]), isError: true });
+  expect(ran).toEqual([]);
+  expect(events).toEqual([]);
 });

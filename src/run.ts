@@ -54,7 +54,10 @@ class TimedOut extends Data.TaggedError("TimedOut") {}
 /**
  * Runs the named operation once, as the session's person, through the tool
  * of its kind: a read through `read`, a write through `write`. The program's
- * refusal comes back as a tool error carrying its sentence. An omitted input
+ * refusal comes back as a tool error carrying its sentence. An operation the
+ * person may run only once their login carries a scope is refused before
+ * anything runs; the door answers such a call 403 before it reaches here, and
+ * this holds for a call that check read differently. An omitted input
  * is `{}` for an operation whose input is an object. A failure is reported and
  * answered with the door's own sentence, so a database's words never reach
  * the person; for a write that reached the program, that sentence says the
@@ -72,6 +75,8 @@ export function call<Actor>(
 ): Effect.Effect<Answer> {
   const operation = session.directory.byName.get(name);
   if (operation === undefined) return Effect.succeed(unknownOperation(session.directory, name));
+  const scope = session.directory.scopes.get(name);
+  if (scope !== undefined) return Effect.succeed(refusal(copy.scopeAwaited(scope.split(" "))));
   if (operation.kind !== tool) return Effect.succeed(refusal(copy.wrongTool(name, operation.kind)));
   const write = operation.kind === "write";
   const input = given === undefined && operation.input["type"] === "object" ? {} : given;

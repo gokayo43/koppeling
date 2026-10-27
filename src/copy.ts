@@ -128,6 +128,8 @@ export const copy = {
   badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
   scopeAwaited: (scopes: readonly string[]) =>
     `Deze operatie vraagt een inlog met toegang tot ${quoted(scopes)}. Log opnieuw in vanuit het programma en geef die toegang; er is niets uitgevoerd.`,
+  malformedCall:
+    "Deze aanroep van een gereedschap is niet goed gevormd: hij noemt het gereedschap en, voor read en write, de operatie elk als tekst. Er is niets uitgevoerd.",
   keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw.",
   personUnreachable:
     "De inlog is gecontroleerd, maar wie je bent kan nu niet worden opgezocht. Probeer het later opnieuw.",

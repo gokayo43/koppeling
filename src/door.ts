@@ -131,6 +131,9 @@ export interface Koppeling {
 
 class Refused extends Data.TaggedError("Refused")<{ readonly sentence: string }> {}
 
+/** A `tools/call` whose name or arguments are not well formed, at a door that awaits a scope. */
+class MalformedCall extends Data.TaggedError("MalformedCall") {}
+
 /** A `read` or `write` of an operation the person may run only once their login carries `scopes`. */
 class ScopeAwaited extends Data.TaggedError("ScopeAwaited")<{
   readonly scopes: readonly string[];
@@ -144,52 +147,60 @@ class PersonUnreachable extends Data.TaggedError("PersonUnreachable")<{
   readonly cause: unknown;
 }> {}
 
-/**
- * A request body's JSON-RPC messages, as every MCP message is, or undefined
- * for a body that is not JSON-RPC: a refused person's program is answered in
- * MCP, so it can show the refusal, and anything else with a plain 403.
- */
-async function jsonRpcMessages(request: Request): Promise<readonly unknown[] | undefined> {
+/** A request body's JSON values, one per batch entry, or undefined for a body that is not JSON. */
+async function bodyValues(request: Request): Promise<readonly unknown[] | undefined> {
   let body: unknown;
   try {
     body = JSON.parse(await request.clone().text());
   } catch {
     return undefined;
   }
-  const messages: unknown[] = Array.isArray(body) ? body : [body];
-  const jsonRpc =
-    messages.length > 0 &&
-    messages.every(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        "jsonrpc" in message &&
-        message.jsonrpc === "2.0",
-    );
-  return jsonRpc ? messages : undefined;
+  const values: unknown[] = Array.isArray(body) ? body : [body];
+  return values;
 }
 
 /**
- * The scopes the `read` and `write` calls among `messages` await: those
- * `scopes` holds for the operations they name. The door is stateless, so each
- * POST carries its own messages and is answered 403 before any of them runs.
- * The SDK's own per-tool `scopeChallenge` was not taken: it names the metadata
- * document only from an `AuthInfo`, whose `clientId` no koppeling token carries.
+ * Whether a body is JSON-RPC, as every MCP message is: a refused person's
+ * program is answered in MCP, so it can show the refusal, and anything else
+ * with a plain 403.
+ */
+const isJsonRpc = (values: readonly unknown[] | undefined) =>
+  values !== undefined &&
+  values.length > 0 &&
+  values.every(
+    (value) =>
+      typeof value === "object" && value !== null && "jsonrpc" in value && value.jsonrpc === "2.0",
+  );
+
+/**
+ * The scopes the `read` and `write` calls among a body's `values` await:
+ * those `scopes` holds for the operations they name, or `malformed` for a
+ * `tools/call` that is not a well-formed one, which is refused rather than
+ * left to the SDK's own reading. The door is stateless, so each POST carries
+ * its own messages and is answered 403 before any of them runs; `call` refuses
+ * such an operation again where it is dispatched. The SDK's own per-tool
+ * `scopeChallenge` was not taken: it names the metadata document only from an
+ * `AuthInfo`, whose `clientId` no koppeling token carries.
  */
 function scopesAwaited(
-  messages: readonly unknown[],
+  values: readonly unknown[],
   scopes: ReadonlyMap<string, string>,
-): readonly string[] {
-  const awaited = messages.flatMap((message) => {
-    if (!isSpecType.CallToolRequest(message)) return [];
-    const { name: tool, arguments: args } = message.params;
+): readonly string[] | "malformed" {
+  const awaited: string[] = [];
+  for (const value of values) {
+    const isCall =
+      typeof value === "object" &&
+      value !== null &&
+      "method" in value &&
+      value.method === "tools/call";
+    if (!isCall) continue;
+    if (!isSpecType.CallToolRequest(value)) return "malformed";
+    const { name: tool, arguments: args } = value.params;
+    if (tool !== "read" && tool !== "write") continue;
     const operation = args?.["name"];
-    const scope =
-      (tool === "read" || tool === "write") && typeof operation === "string"
-        ? scopes.get(operation)
-        : undefined;
-    return scope === undefined ? [] : scope.split(" ");
-  });
+    if (typeof operation !== "string") return "malformed";
+    awaited.push(...(scopes.get(operation)?.split(" ") ?? []));
+  }
   return [...new Set(awaited)];
 }
 
@@ -282,8 +293,9 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
         catch: (cause) => new PersonUnreachable({ cause }),
       });
       if (part.directory.scopes.size > 0) {
-        const messages = yield* Effect.promise(() => jsonRpcMessages(request));
-        const scopes = scopesAwaited(messages ?? [], part.directory.scopes);
+        const values = yield* Effect.promise(() => bodyValues(request));
+        const scopes = scopesAwaited(values ?? [], part.directory.scopes);
+        if (scopes === "malformed") return yield* new MalformedCall();
         if (scopes.length > 0) return yield* new ScopeAwaited({ scopes });
       }
       return yield* Effect.promise(() =>
@@ -314,11 +326,12 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
               challenge('error="insufficient_scope"', `scope="${scopes.join(" ")}"`),
             ),
           ),
+        MalformedCall: () => Effect.succeed(refusalResponse(400, copy.malformedCall)),
         Refused: ({ sentence }) =>
           Effect.promise(async () =>
-            (await jsonRpcMessages(request)) === undefined
-              ? refusalResponse(403, sentence)
-              : serve(request, () => refusalServer(sentence)),
+            isJsonRpc(await bodyValues(request))
+              ? serve(request, () => refusalServer(sentence))
+              : refusalResponse(403, sentence),
           ),
         PersonUnreachable: ({ cause }) =>
           report({ kind: "failure", operation: null, cause }).pipe(

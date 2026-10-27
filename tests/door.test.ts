@@ -44,7 +44,7 @@ const METADATA_URL = "https://wms.example/.well-known/oauth-protected-resource/a
 
 const jsonRpcPost = (
   token: string | undefined,
-  message: { readonly method: string; readonly params: Json },
+  message: { readonly method: string; readonly params?: Json },
 ) =>
   new Request(RESOURCE, {
     method: "POST",
@@ -529,4 +529,29 @@ test("a scope outside RFC 6750's characters answers 503 and reports which operat
   expect(response.status).toBe(503);
   expect(events).toMatchObject([{ kind: "failure", operation: null }]);
   expect(String(events[0]?.kind === "failure" && events[0].cause)).toContain('"orders.get"');
+});
+
+test("at a door that awaits a scope, a tools/call that is not well formed is refused with 400, not left to the SDK's reading", async () => {
+  // The likeliest wrong skips what it cannot read and serves it, so the
+  // scope check rests on the SDK reading the call as the door failed to.
+  using idp = await identityProvider();
+  const { door, invoked, events } = warehouseDoor(() => ({
+    actor: warehouseAdmin,
+    allows: (operation) =>
+      operation.name === "orders.cancel" ? { scope: "orders:schrijven" } : true,
+  }));
+  const token = await idp.token();
+  for (const params of [
+    undefined,
+    { name: "write", arguments: { name: ["orders.cancel"], input: { orderId: 1 } } },
+    { name: 7, arguments: { name: "orders.cancel" } },
+  ]) {
+    const response = await door.handle(
+      jsonRpcPost(token, { method: "tools/call", ...(params === undefined ? {} : { params }) }),
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: copy.malformedCall });
+  }
+  expect(invoked).toEqual([]);
+  expect(events).toEqual([]);
 });

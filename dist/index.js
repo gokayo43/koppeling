@@ -375,6 +375,7 @@ const copy$2 = {
 	noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",
 	badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
 	scopeAwaited: (scopes) => `Deze operatie vraagt een inlog met toegang tot ${quoted(scopes)}. Log opnieuw in vanuit het programma en geef die toegang; er is niets uitgevoerd.`,
+	malformedCall: "Deze aanroep van een gereedschap is niet goed gevormd: hij noemt het gereedschap en, voor read en write, de operatie elk als tekst. Er is niets uitgevoerd.",
 	keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw.",
 	personUnreachable: "De inlog is gecontroleerd, maar wie je bent kan nu niet worden opgezocht. Probeer het later opnieuw."
 };
@@ -19000,7 +19001,10 @@ var TimedOut = class extends TaggedError("TimedOut") {};
 /**
 * Runs the named operation once, as the session's person, through the tool
 * of its kind: a read through `read`, a write through `write`. The program's
-* refusal comes back as a tool error carrying its sentence. An omitted input
+* refusal comes back as a tool error carrying its sentence. An operation the
+* person may run only once their login carries a scope is refused before
+* anything runs; the door answers such a call 403 before it reaches here, and
+* this holds for a call that check read differently. An omitted input
 * is `{}` for an operation whose input is an object. A failure is reported and
 * answered with the door's own sentence, so a database's words never reach
 * the person; for a write that reached the program, that sentence says the
@@ -19012,6 +19016,8 @@ var TimedOut = class extends TaggedError("TimedOut") {};
 function call(session, tool, name, given, vervolg) {
 	const operation = session.directory.byName.get(name);
 	if (operation === void 0) return succeed$1(unknownOperation(session.directory, name));
+	const scope = session.directory.scopes.get(name);
+	if (scope !== void 0) return succeed$1(refusal(copy$2.scopeAwaited(scope.split(" "))));
 	if (operation.kind !== tool) return succeed$1(refusal(copy$2.wrongTool(name, operation.kind)));
 	const write = operation.kind === "write";
 	const input = given === void 0 && operation.input["type"] === "object" ? {} : given;
@@ -19315,6 +19321,8 @@ function refusalServer(sentence) {
 //#endregion
 //#region src/door.ts
 var Refused = class extends TaggedError("Refused") {};
+/** A `tools/call` whose name or arguments are not well formed, at a door that awaits a scope. */
+var MalformedCall = class extends TaggedError("MalformedCall") {};
 /** A `read` or `write` of an operation the person may run only once their login carries `scopes`. */
 var ScopeAwaited = class extends TaggedError("ScopeAwaited") {};
 /**
@@ -19322,36 +19330,43 @@ var ScopeAwaited = class extends TaggedError("ScopeAwaited") {};
 * person could not be looked up.
 */
 var PersonUnreachable = class extends TaggedError("PersonUnreachable") {};
-/**
-* A request body's JSON-RPC messages, as every MCP message is, or undefined
-* for a body that is not JSON-RPC: a refused person's program is answered in
-* MCP, so it can show the refusal, and anything else with a plain 403.
-*/
-async function jsonRpcMessages(request) {
+/** A request body's JSON values, one per batch entry, or undefined for a body that is not JSON. */
+async function bodyValues(request) {
 	let body;
 	try {
 		body = JSON.parse(await request.clone().text());
 	} catch {
 		return;
 	}
-	const messages = Array.isArray(body) ? body : [body];
-	return messages.length > 0 && messages.every((message) => typeof message === "object" && message !== null && "jsonrpc" in message && message.jsonrpc === "2.0") ? messages : void 0;
+	return Array.isArray(body) ? body : [body];
 }
 /**
-* The scopes the `read` and `write` calls among `messages` await: those
-* `scopes` holds for the operations they name. The door is stateless, so each
-* POST carries its own messages and is answered 403 before any of them runs.
-* The SDK's own per-tool `scopeChallenge` was not taken: it names the metadata
-* document only from an `AuthInfo`, whose `clientId` no koppeling token carries.
+* Whether a body is JSON-RPC, as every MCP message is: a refused person's
+* program is answered in MCP, so it can show the refusal, and anything else
+* with a plain 403.
 */
-function scopesAwaited(messages, scopes) {
-	const awaited = messages.flatMap((message) => {
-		if (!isSpecType.CallToolRequest(message)) return [];
-		const { name: tool, arguments: args } = message.params;
+const isJsonRpc = (values) => values !== void 0 && values.length > 0 && values.every((value) => typeof value === "object" && value !== null && "jsonrpc" in value && value.jsonrpc === "2.0");
+/**
+* The scopes the `read` and `write` calls among a body's `values` await:
+* those `scopes` holds for the operations they name, or `malformed` for a
+* `tools/call` that is not a well-formed one, which is refused rather than
+* left to the SDK's own reading. The door is stateless, so each POST carries
+* its own messages and is answered 403 before any of them runs; `call` refuses
+* such an operation again where it is dispatched. The SDK's own per-tool
+* `scopeChallenge` was not taken: it names the metadata document only from an
+* `AuthInfo`, whose `clientId` no koppeling token carries.
+*/
+function scopesAwaited(values, scopes) {
+	const awaited = [];
+	for (const value of values) {
+		if (!(typeof value === "object" && value !== null && "method" in value && value.method === "tools/call")) continue;
+		if (!isSpecType.CallToolRequest(value)) return "malformed";
+		const { name: tool, arguments: args } = value.params;
+		if (tool !== "read" && tool !== "write") continue;
 		const operation = args?.["name"];
-		const scope = (tool === "read" || tool === "write") && typeof operation === "string" ? scopes.get(operation) : void 0;
-		return scope === void 0 ? [] : scope.split(" ");
-	});
+		if (typeof operation !== "string") return "malformed";
+		awaited.push(...scopes.get(operation)?.split(" ") ?? []);
+	}
 	return [...new Set(awaited)];
 }
 /**
@@ -19436,7 +19451,8 @@ function koppeling(options) {
 			catch: (cause) => new PersonUnreachable({ cause })
 		});
 		if (part.directory.scopes.size > 0) {
-			const scopes = scopesAwaited((yield* promise(() => jsonRpcMessages(request))) ?? [], part.directory.scopes);
+			const scopes = scopesAwaited((yield* promise(() => bodyValues(request))) ?? [], part.directory.scopes);
+			if (scopes === "malformed") return yield* new MalformedCall();
 			if (scopes.length > 0) return yield* new ScopeAwaited({ scopes });
 		}
 		return yield* promise(() => serve(request, () => mcpServer({
@@ -19449,7 +19465,8 @@ function koppeling(options) {
 	}).pipe(catchTags({
 		Unauthenticated: ({ sentence, tokenGiven }) => succeed$1(refusalResponse(401, sentence, tokenGiven ? challenge("error=\"invalid_token\"", ...errorDescription(sentence)) : challenge())),
 		ScopeAwaited: ({ scopes }) => succeed$1(refusalResponse(403, copy$2.scopeAwaited(scopes), challenge("error=\"insufficient_scope\"", `scope="${scopes.join(" ")}"`))),
-		Refused: ({ sentence }) => promise(async () => await jsonRpcMessages(request) === void 0 ? refusalResponse(403, sentence) : serve(request, () => refusalServer(sentence))),
+		MalformedCall: () => succeed$1(refusalResponse(400, copy$2.malformedCall)),
+		Refused: ({ sentence }) => promise(async () => isJsonRpc(await bodyValues(request)) ? serve(request, () => refusalServer(sentence)) : refusalResponse(403, sentence)),
 		PersonUnreachable: ({ cause }) => report({
 			kind: "failure",
 			operation: null,
