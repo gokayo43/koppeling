@@ -4,6 +4,7 @@ export type { Catalogue, Kind, KoppelingMeta, Note, Operation, Outcome } from ".
 export {
   koppeling,
   type ActorDecision,
+  type Admission,
   type BootReport,
   type Identity,
   type Koppeling,

@@ -82,7 +82,11 @@ function pagingFields(input: JsonSchema): string[] {
   return [...new Set(fields)];
 }
 
-function described(operation: Operation<never>, part: "output" | undefined): Produced {
+function described(
+  operation: Operation<never>,
+  scope: string | undefined,
+  part: "output" | undefined,
+): Produced {
   const output = operation.output ?? null;
   if (part === "output") {
     const whole = JSON.stringify(output);
@@ -94,6 +98,7 @@ function described(operation: Operation<never>, part: "output" | undefined): Pro
     name: operation.name,
     area: operation.area,
     kind: operation.kind,
+    ...(scope === undefined ? {} : { scope }),
     destructive: operation.destructive,
     idempotent: operation.idempotent,
     description: operation.description,
@@ -118,7 +123,7 @@ function describe<Actor>(
     session.pages,
     pageKey(String(session.claims.sub), "describe", name, part ?? null),
     vervolg,
-    Effect.sync(() => described(operation, part)),
+    Effect.sync(() => described(operation, session.directory.scopes.get(name), part)),
   );
 }
 

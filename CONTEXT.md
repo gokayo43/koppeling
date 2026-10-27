@@ -30,6 +30,11 @@ program tells the agent to ask the person first, and Claude Desktop does ask.
 as orders, stock or suppliers, so a person or an agent can look through one
 part at a time.
 
+**Toegang** (scope): a part of a program that a koppelingsinlog gives the
+program access to, such as the boekhouding. A person may see an operation that
+needs a toegang their inlog did not give; when the program tries it, it asks
+them to sign in again and give that toegang.
+
 **Catalogus** (catalogue): every operation a program offers through its
 koppeling, as the program itself declares them when it starts.
 

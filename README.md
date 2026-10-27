@@ -50,13 +50,23 @@ const door = koppeling({
   identity: {
     issuer: "https://portal.example", // every token's `iss`
     jwksUrl: "http://portal.lan/api/auth/jwks", // optional; `<issuer>/.well-known/jwks.json` when absent
+    // or, never beside jwksUrl, the keys the host holds (jose's createLocalJWKSet), so nothing is fetched:
+    // keys: createLocalJWKSet(portalKeySet),
     authorizationServer: "https://portal.example",
   },
   actorFor: async (claims) => {
     const person = await personFor(claims.sub);
-    // allows is optional: the operations this person may use; every one when absent.
-    return { actor: person, allows: (operation) => person.may(operation.name) };
-  }, // or { refusal: "Dutch sentence" }
+    const granted = String(claims.scope ?? "").split(" ");
+    // allows is optional: what this person may do with each operation; everything when absent.
+    // true: use it. false: never see it. { scope }: see it, run it only once the login carries scope.
+    return {
+      actor: person,
+      allows: (operation) =>
+        operation.area === "boekhouding" && !granted.includes("boekhouding")
+          ? { scope: "boekhouding" }
+          : person.may(operation.name),
+    };
+  }, // or { refusal: "Dutch sentence" }, or { signIn: "Dutch sentence" }
   log: (event) => logger.info(event), // optional; Effect's logger when absent
 });
 
@@ -99,8 +109,31 @@ Elysia field.
   with the door's own sentence for; `operation` is null when the sign-in step
   failed (the key set could not be fetched, or `actorFor` or `allows` threw).
 
+`actorFor` answers one of three:
+
+- `{ actor, allows? }`: the person comes in as `actor`. `allows(operation)`
+  answers an `Admission`: `true`, the person may use it; `false`, the door hides
+  it from them; `{ scope }`, they see it (the outline, `list` and `find` show
+  it, `describe` answers it with `scope`) but may run it only once their login
+  carries `scope`, one OAuth scope or several split by one space. A `read` or
+  `write` of such an operation is answered at the HTTP level, before anything
+  runs and with no write event: 403 with `WWW-Authenticate: Bearer
+  resource_metadata="<metadata url>", error="insufficient_scope",
+  scope="<scope>"` (RFC 6750 §3.1), on which an MCP client signs in again
+  asking for it. A scope outside RFC 6750's characters is a failure, answered
+  as one `allows` throws.
+- `{ refusal }`: the person may not come in, and their program is told why in
+  MCP (see Sign-in).
+- `{ signIn }`: the token verified, but its bearer must go through the sign-in
+  again first (a token that must be exchanged, say): 401 with
+  `WWW-Authenticate: Bearer resource_metadata="<metadata url>",
+  error="invalid_token", error_description="<the sentence>"`, the sentence as
+  the body. The header carries it in RFC 6750's characters: accents dropped,
+  and no `"` or `\`.
+
 The types: `Catalogue<Actor>`, `Operation<Actor>`, `Kind` (`"read" | "write"`),
-`Outcome`, `Note` (`{ name, reason }`), `KoppelingMeta`, `ActorDecision<Actor>`, `Identity`,
+`Outcome`, `Note` (`{ name, reason }`), `KoppelingMeta`, `ActorDecision<Actor>`,
+`Admission`, `Identity`,
 `KoppelingOptions<Actor>`, `Koppeling`, `BootReport`, `KoppelingEvent`,
 `WriteOutcome`, `GlossaryOptions`, `ElysiaOptions<Actor>`,
 `TrpcOptions<Router, Actor>`, `Json`, `JsonObject`, `JsonSchema`.
@@ -109,13 +142,13 @@ The types: `Catalogue<Actor>`, `Operation<Actor>`, `Kind` (`"read" | "write"`),
 
 Five tools, always these, in this order:
 
-| Tool       | Takes                        | Answers                                                                                                                                                                                                           |
-| ---------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `list`     | `area?`                      | No area: every area with its line and operation count. An exact area: its operations with name, kind and line, a write with its `destructive` and `idempotent`.                                                   |
-| `find`     | `words`                      | Up to ten operations whose name, area, written description and input field names best meet the words (at most 200 characters, 20 distinct words), shown as `list` shows them. Runs nothing.                       |
-| `describe` | `name`, `part?`, `vervolg?`  | The whole operation: kind, `destructive`, `idempotent`, description, side-effect line, input schema, `paging`, output schema (or, past 10 000 characters, its length). `part: "output"`: the output schema whole. |
-| `read`     | `name`, `input?`, `vervolg?` | Runs a read operation once as the person; its value as text, and also as `structuredContent: { result }` while it is under 10 000 characters, or in pages when it is long.                                        |
-| `write`    | `name`, `input?`             | Runs a write operation once as the person, the same way, and always whole.                                                                                                                                        |
+| Tool       | Takes                        | Answers                                                                                                                                                                                                                                                 |
+| ---------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`     | `area?`                      | No area: every area with its line and operation count. An exact area: its operations with name, kind and line, a write with its `destructive` and `idempotent`.                                                                                         |
+| `find`     | `words`                      | Up to ten operations whose name, area, written description and input field names best meet the words (at most 200 characters, 20 distinct words), shown as `list` shows them. Runs nothing.                                                             |
+| `describe` | `name`, `part?`, `vervolg?`  | The whole operation: kind, the `scope` it awaits (when it does), `destructive`, `idempotent`, description, side-effect line, input schema, `paging`, output schema (or, past 10 000 characters, its length). `part: "output"`: the output schema whole. |
+| `read`     | `name`, `input?`, `vervolg?` | Runs a read operation once as the person; its value as text, and also as `structuredContent: { result }` while it is under 10 000 characters, or in pages when it is long.                                                                              |
+| `write`    | `name`, `input?`             | Runs a write operation once as the person, the same way, and always whole.                                                                                                                                                                              |
 
 An answer of 10 000 characters or more, a quarter of a page, comes as text
 alone: a client may pass the model both the text and the structured content,
@@ -136,6 +169,11 @@ the areas. Nothing ever resolves a near miss on its own. Where `actorFor`
 answered an `allows`, the person meets only the operations it admits, in the
 outline, `list`, `find` and `describe` alike, and a call to any other is
 refused as a name the door does not have.
+
+`read` and `write` without `input` run an operation whose input schema is an
+object with `{}`, so an operation whose every field is optional runs when its
+input is left out, and one with a required field is refused naming it; any
+other operation gets no input.
 
 `find` counts a word in each field it meets, by the field's weight (name 3,
 description and area 2, input fields 1) and by how rare its match is; and once
@@ -263,23 +301,27 @@ validation error: Invalid arguments for tool find: …"). That is accepted.
 ## Sign-in
 
 Every request carries a bearer JWT from the identity provider (the portal). The
-door verifies its signature against the provider's key set, cached and fetched
+door verifies its signature against `identity.keys` when the host gives them,
+fetching nothing, or else against the provider's key set, cached and fetched
 again for a key id it has not seen (no more often than every 5 seconds, so a
 key rotation costs at most 5 seconds of refused tokens), and checks `iss`
 against `identity.issuer`, `aud` against `resource.url`, `nbf`, and that the
 token carries an `exp` and a `sub`. Only then does it ask `actorFor(claims)`.
 
-| Request                                  | Answer                                                                                                                        |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| No bearer                                | 401, `WWW-Authenticate: Bearer resource_metadata="<metadata url>"`                                                            |
-| A bearer that does not verify            | 401, the same header with `error="invalid_token"`                                                                             |
-| The provider's key set cannot be fetched | 503                                                                                                                           |
-| `actorFor` answers `{ refusal }`         | MCP whose instructions and every tool answer the refusal; 403, `{ "error": "<refusal>" }`, for a request that is not JSON-RPC |
-| `actorFor` or `allows` throws            | 503, the door's own sentence; the error is reported                                                                           |
+| Request                               | Answer                                                                                                                        |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| No bearer                             | 401, `WWW-Authenticate: Bearer resource_metadata="<metadata url>"`                                                            |
+| A bearer that does not verify         | 401, the same header with `error="invalid_token"` and the door's sentence as `error_description`                              |
+| The key set cannot be fetched or read | 503                                                                                                                           |
+| `actorFor` answers `{ signIn }`       | 401, the same header with `error="invalid_token"` and the host's sentence as `error_description`                              |
+| `actorFor` answers `{ refusal }`      | MCP whose instructions and every tool answer the refusal; 403, `{ "error": "<refusal>" }`, for a request that is not JSON-RPC |
+| A `read` or `write` `allows` scoped   | 403, `error="insufficient_scope"` and `scope="<scope>"`, as above                                                             |
+| `actorFor` or `allows` throws         | 503, the door's own sentence; the error is reported                                                                           |
 
 The metadata document names the resource, the authorization server, the
-scopes and `bearer_methods_supported: ["header"]`. The door checks no scope
-itself: `actorFor` receives the claims, `scope` among them, and decides.
+scopes and `bearer_methods_supported: ["header"]`. The door reads no scope
+from a token itself: `actorFor` receives the claims, `scope` among them, and
+decides, through `allows`' `{ scope }`, which operations wait for one.
 
 ## Protocol
 

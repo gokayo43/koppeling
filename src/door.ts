@@ -2,13 +2,14 @@ import {
   createMcpHandler,
   getOAuthProtectedResourceMetadataUrl,
   isLegacyRequest,
+  isSpecType,
   WebStandardStreamableHTTPServerTransport,
   type McpServer,
 } from "@modelcontextprotocol/server";
 import { Data, Effect } from "effect";
-import type { JWTPayload } from "jose";
+import type { JWTPayload, JWTVerifyGetKey } from "jose";
 
-import { bearerVerifier } from "./auth";
+import { bearerVerifier, Unauthenticated } from "./auth";
 import type { Catalogue, Note, Operation } from "./catalogue";
 import { copy } from "./copy";
 import { admitted, instructionsFor, toDirectory } from "./directory";
@@ -16,19 +17,36 @@ import { reporter } from "./events";
 import { Pages } from "./pages";
 import { mcpServer, refusalServer } from "./tools";
 
-/** The identity provider whose tokens the door accepts: the portal, for every koppeling. */
-export interface Identity {
+/**
+ * The identity provider whose tokens the door accepts: the portal, for every
+ * koppeling. Its signing keys are fetched from `jwksUrl`, or handed over as
+ * `keys` by a host that holds them itself; never both.
+ */
+export type Identity = {
   /** The `iss` every token must carry: the provider's public origin. */
   readonly issuer: string;
-  /**
-   * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
-   * when absent. Separate from `issuer` so a host beside the provider can fetch
-   * them over its own network while tokens still name the public origin.
-   */
-  readonly jwksUrl?: string;
   /** The authorization server the metadata document sends a client to for its sign-in. */
   readonly authorizationServer: string;
-}
+} & (
+  | {
+      /**
+       * Where the provider's signing keys are fetched; `<issuer>/.well-known/jwks.json`
+       * when absent. Separate from `issuer` so a host beside the provider can fetch
+       * them over its own network while tokens still name the public origin.
+       */
+      readonly jwksUrl?: string;
+      readonly keys?: never;
+    }
+  | {
+      /**
+       * The provider's signing keys as the host holds them (jose's
+       * `createLocalJWKSet`, or a key set of its own), so the door fetches
+       * nothing to verify a token. A host that is the provider passes its own.
+       */
+      readonly keys: JWTVerifyGetKey;
+      readonly jwksUrl?: never;
+    }
+);
 
 /**
  * What a write came to: the program's value, its refusal, a failure before the
@@ -55,17 +73,31 @@ export type KoppelingEvent =
   | { readonly kind: "failure"; readonly operation: string | null; readonly cause: unknown };
 
 /**
+ * Whether a person may use an operation. `true`: yes. `false`: the door hides
+ * it from them. `{ scope }`: they may see it (the outline, `list` and `find`
+ * show it, `describe` names the scope) but run it only once their login
+ * carries `scope`, an OAuth scope or several split by one space; a `read` or
+ * `write` of it is answered 403 `insufficient_scope` naming the scope, on which
+ * their program signs in again asking for it, and nothing is run.
+ */
+export type Admission = boolean | { readonly scope: string };
+
+/**
  * Who a token's person is to the program, with the operations they may use
- * (every one when `allows` is absent), or the program's sentence for why they
- * may not come in.
+ * (every one when `allows` is absent); or the program's sentence for why they
+ * may not come in (`refusal`, answered in MCP for their program to show); or
+ * its sentence for why this token must go through the sign-in again before it
+ * comes in (`signIn`, answered 401 `invalid_token`, on which their program
+ * signs in again).
  */
 export type ActorDecision<Actor> =
   | {
       readonly actor: Actor;
-      /** Whether the person may use `operation`: the door lists, finds, describes and runs only those. */
-      readonly allows?: (operation: Operation<Actor>) => boolean;
+      /** What the person may do with `operation`; the door offers only what it admits. */
+      readonly allows?: (operation: Operation<Actor>) => Admission;
     }
-  | { readonly refusal: string };
+  | { readonly refusal: string }
+  | { readonly signIn: string };
 
 export interface KoppelingOptions<Actor> {
   readonly catalogue: Catalogue<Actor>;
@@ -99,6 +131,14 @@ export interface Koppeling {
 
 class Refused extends Data.TaggedError("Refused")<{ readonly sentence: string }> {}
 
+/** A `tools/call` whose name or arguments are not well formed, at a door that awaits a scope. */
+class MalformedCall extends Data.TaggedError("MalformedCall") {}
+
+/** A `read` or `write` of an operation the person may run only once their login carries `scopes`. */
+class ScopeAwaited extends Data.TaggedError("ScopeAwaited")<{
+  readonly scopes: readonly string[];
+}> {}
+
 /**
  * The host's `actorFor`, or its `allows`, failed: the token verified, but its
  * person could not be looked up.
@@ -107,29 +147,75 @@ class PersonUnreachable extends Data.TaggedError("PersonUnreachable")<{
   readonly cause: unknown;
 }> {}
 
-/**
- * Whether a request's body is JSON-RPC, as every MCP message is: a refused
- * person's program is answered in MCP, so it can show the refusal, and
- * anything else with a plain 403.
- */
-async function isJsonRpc(request: Request): Promise<boolean> {
+/** A request body's JSON values, one per batch entry, or undefined for a body that is not JSON. */
+async function bodyValues(request: Request): Promise<readonly unknown[] | undefined> {
   let body: unknown;
   try {
     body = JSON.parse(await request.clone().text());
   } catch {
-    return false;
+    return undefined;
   }
-  const messages: unknown[] = Array.isArray(body) ? body : [body];
-  return (
-    messages.length > 0 &&
-    messages.every(
-      (message) =>
-        typeof message === "object" &&
-        message !== null &&
-        "jsonrpc" in message &&
-        message.jsonrpc === "2.0",
-    )
+  const values: unknown[] = Array.isArray(body) ? body : [body];
+  return values;
+}
+
+/**
+ * Whether a body is JSON-RPC, as every MCP message is: a refused person's
+ * program is answered in MCP, so it can show the refusal, and anything else
+ * with a plain 403.
+ */
+const isJsonRpc = (values: readonly unknown[] | undefined) =>
+  values !== undefined &&
+  values.length > 0 &&
+  values.every(
+    (value) =>
+      typeof value === "object" && value !== null && "jsonrpc" in value && value.jsonrpc === "2.0",
   );
+
+/**
+ * The scopes the `read` and `write` calls among a body's `values` await:
+ * those `scopes` holds for the operations they name, or `malformed` for a
+ * `tools/call` that is not a well-formed one, which is refused rather than
+ * left to the SDK's own reading. The door is stateless, so each POST carries
+ * its own messages and is answered 403 before any of them runs; `call` refuses
+ * such an operation again where it is dispatched. The SDK's own per-tool
+ * `scopeChallenge` was not taken: it names the metadata document only from an
+ * `AuthInfo`, whose `clientId` no koppeling token carries.
+ */
+function scopesAwaited(
+  values: readonly unknown[],
+  scopes: ReadonlyMap<string, string>,
+): readonly string[] | "malformed" {
+  const awaited: string[] = [];
+  for (const value of values) {
+    const isCall =
+      typeof value === "object" &&
+      value !== null &&
+      "method" in value &&
+      value.method === "tools/call";
+    if (!isCall) continue;
+    if (!isSpecType.CallToolRequest(value)) return "malformed";
+    const { name: tool, arguments: args } = value.params;
+    if (tool !== "read" && tool !== "write") continue;
+    const operation = args?.["name"];
+    if (typeof operation !== "string") return "malformed";
+    awaited.push(...(scopes.get(operation)?.split(" ") ?? []));
+  }
+  return [...new Set(awaited)];
+}
+
+/**
+ * `text` as an RFC 6750 §3 `error_description`, which allows one or more of
+ * printable ASCII but `"` and `\`: letters lose their accents, anything else
+ * is dropped, and a text with nothing left gives no parameter.
+ */
+function errorDescription(text: string): readonly string[] {
+  const kept = text
+    .normalize("NFKD")
+    .replaceAll(/\s+/g, " ")
+    .replaceAll(/[^\x20\x21\x23-\x5B\x5D-\x7E]/g, "")
+    .trim();
+  return kept ? [`error_description="${kept}"`] : [];
 }
 
 const refusalResponse = (
@@ -179,77 +265,93 @@ export function koppeling<Actor>(options: KoppelingOptions<Actor>): Koppeling {
   };
 
   /** The part of the door a person may use, and its outline; the whole door without `allows`. */
-  const personal = (allows: ((operation: Operation<Actor>) => boolean) | undefined) => {
+  const personal = (allows: ((operation: Operation<Actor>) => Admission) | undefined) => {
     if (allows === undefined) return { directory: operations, instructions };
     const directory = admitted(operations, allows);
     return { directory, instructions: instructionsFor(options.glossary, directory) };
   };
+
+  /** A `WWW-Authenticate` challenge (RFC 6750 §3) naming the metadata document, then `params`. */
+  const challenge = (...params: readonly string[]) => ({
+    "WWW-Authenticate": [`Bearer resource_metadata="${metadataUrl}"`, ...params].join(", "),
+  });
+
+  /** One POST, verified and answered as its person, or refused with the status that says why. */
+  const answer = (request: Request) =>
+    Effect.gen(function* () {
+      const claims = yield* verify(request);
+      const decision = yield* Effect.tryPromise({
+        try: async () => options.actorFor(claims),
+        catch: (cause) => new PersonUnreachable({ cause }),
+      });
+      if ("refusal" in decision) return yield* new Refused({ sentence: decision.refusal });
+      if ("signIn" in decision) {
+        return yield* new Unauthenticated({ sentence: decision.signIn, tokenGiven: true });
+      }
+      const part = yield* Effect.try({
+        try: () => personal(decision.allows),
+        catch: (cause) => new PersonUnreachable({ cause }),
+      });
+      if (part.directory.scopes.size > 0) {
+        const values = yield* Effect.promise(() => bodyValues(request));
+        const scopes = scopesAwaited(values ?? [], part.directory.scopes);
+        if (scopes === "malformed") return yield* new MalformedCall();
+        if (scopes.length > 0) return yield* new ScopeAwaited({ scopes });
+      }
+      return yield* Effect.promise(() =>
+        serve(request, () =>
+          mcpServer(
+            { directory: part.directory, actor: decision.actor, claims, report, pages },
+            part.instructions,
+          ),
+        ),
+      );
+    }).pipe(
+      Effect.catchTags({
+        Unauthenticated: ({ sentence, tokenGiven }) =>
+          Effect.succeed(
+            refusalResponse(
+              401,
+              sentence,
+              tokenGiven
+                ? challenge('error="invalid_token"', ...errorDescription(sentence))
+                : challenge(),
+            ),
+          ),
+        ScopeAwaited: ({ scopes }) =>
+          Effect.succeed(
+            refusalResponse(
+              403,
+              copy.scopeAwaited(scopes),
+              challenge('error="insufficient_scope"', `scope="${scopes.join(" ")}"`),
+            ),
+          ),
+        MalformedCall: () => Effect.succeed(refusalResponse(400, copy.malformedCall)),
+        Refused: ({ sentence }) =>
+          Effect.promise(async () =>
+            isJsonRpc(await bodyValues(request))
+              ? serve(request, () => refusalServer(sentence))
+              : refusalResponse(403, sentence),
+          ),
+        PersonUnreachable: ({ cause }) =>
+          report({ kind: "failure", operation: null, cause }).pipe(
+            Effect.as(refusalResponse(503, copy.personUnreachable)),
+          ),
+        KeysUnreachable: ({ cause }) =>
+          report({ kind: "failure", operation: null, cause }).pipe(
+            Effect.as(refusalResponse(503, copy.keysUnreachable)),
+          ),
+      }),
+    );
 
   /**
    * Only POST: the door keeps no session, so it has no stream to open on a GET
    * and none to end on a DELETE.
    */
   const handle = (request: Request) =>
-    request.method !== "POST"
-      ? Promise.resolve(new Response(null, { status: 405, headers: { Allow: "POST" } }))
-      : Effect.runPromise(
-          verify(request).pipe(
-            Effect.flatMap((claims) =>
-              Effect.tryPromise({
-                try: async () => options.actorFor(claims),
-                catch: (cause) => new PersonUnreachable({ cause }),
-              }).pipe(
-                Effect.flatMap((decision): Effect.Effect<Response, Refused | PersonUnreachable> =>
-                  "refusal" in decision
-                    ? Effect.fail(new Refused({ sentence: decision.refusal }))
-                    : Effect.try({
-                        try: () => personal(decision.allows),
-                        catch: (cause) => new PersonUnreachable({ cause }),
-                      }).pipe(
-                        Effect.flatMap((part) =>
-                          Effect.promise(() =>
-                            serve(request, () =>
-                              mcpServer(
-                                {
-                                  directory: part.directory,
-                                  actor: decision.actor,
-                                  claims,
-                                  report,
-                                  pages,
-                                },
-                                part.instructions,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                ),
-              ),
-            ),
-            Effect.catchTags({
-              Unauthenticated: ({ sentence, tokenGiven }) =>
-                Effect.succeed(
-                  refusalResponse(401, sentence, {
-                    "WWW-Authenticate": `Bearer resource_metadata="${metadataUrl}"${tokenGiven ? ', error="invalid_token"' : ""}`,
-                  }),
-                ),
-              Refused: ({ sentence }) =>
-                Effect.promise(async () =>
-                  (await isJsonRpc(request))
-                    ? serve(request, () => refusalServer(sentence))
-                    : refusalResponse(403, sentence),
-                ),
-              PersonUnreachable: ({ cause }) =>
-                report({ kind: "failure", operation: null, cause }).pipe(
-                  Effect.as(refusalResponse(503, copy.personUnreachable)),
-                ),
-              KeysUnreachable: ({ cause }) =>
-                report({ kind: "failure", operation: null, cause }).pipe(
-                  Effect.as(refusalResponse(503, copy.keysUnreachable)),
-                ),
-            }),
-          ),
-        );
+    request.method === "POST"
+      ? Effect.runPromise(answer(request))
+      : Promise.resolve(new Response(null, { status: 405, headers: { Allow: "POST" } }));
 
   const metadata = (request: Request) =>
     request.method === "GET" || request.method === "HEAD"

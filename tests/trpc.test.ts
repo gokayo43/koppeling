@@ -13,8 +13,11 @@ import {
 } from "fast-check";
 import { z } from "zod";
 
+import { copy } from "../src/copy";
+import { toDirectory } from "../src/directory";
 import { fromTrpcRouter, type Json, type KoppelingMeta } from "../src/index";
 import { contextFor, warehouseRouter } from "./fixtures/warehouse";
+import { connected } from "./support/session";
 
 /** A signal no case aborts, for a run the case lets finish. */
 const unaborted = new AbortController().signal;
@@ -505,4 +508,44 @@ test("a shown schema names no dialect of its own, since closing writes 2020-12's
   for (const operation of fromTrpcRouter(router, { contextFor: () => ({}) }).operations) {
     expect(JSON.stringify([operation.input, operation.output])).not.toContain("$schema");
   }
+});
+
+test("a refusal the program stated keeps its sentence whatever its status; only an unexpected throw is a failure", async () => {
+  // The likeliest wrong decides by status, so a 5xx the program threw on
+  // purpose ("bunq antwoordt nu niet") reaches the agent as the door's
+  // generic sentence and a failure event.
+  const router = t.router({
+    bunq: t.router({
+      gateway: t.procedure.query(() => {
+        throw new TRPCError({ code: "BAD_GATEWAY", message: "bunq antwoordt nu niet" });
+      }),
+      unavailable: t.procedure.query(() => {
+        throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "Exact is in onderhoud" });
+      }),
+      timeout: t.procedure.query(() => {
+        throw new TRPCError({ code: "TIMEOUT", message: "bunq was te traag" });
+      }),
+      internal: t.procedure.query(() => {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "connect ECONNREFUSED" });
+      }),
+    }),
+  });
+  await using door = await connected(
+    toDirectory(fromTrpcRouter(router, { contextFor: () => ({}) })),
+    null,
+  );
+  const read = async (name: string) => {
+    const result = await door.client.callTool({ name: "read", arguments: { name } });
+    expect(result.isError).toBe(true);
+    return result.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+  };
+
+  expect(await read("bunq.gateway")).toBe("bunq antwoordt nu niet");
+  expect(await read("bunq.unavailable")).toBe("Exact is in onderhoud");
+  expect(await read("bunq.timeout")).toBe("bunq was te traag");
+  expect(door.events).toEqual([]);
+  expect(await read("bunq.internal")).toBe(copy.internalError);
+  expect(door.events.map((event) => [event.kind, event.operation])).toEqual([
+    ["failure", "bunq.internal"],
+  ]);
 });

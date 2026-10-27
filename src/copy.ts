@@ -56,7 +56,7 @@ export const copy = {
     run: {
       name: "De naam van de operatie, precies zoals list of find haar noemt.",
       input:
-        "De invoer volgens het invoerschema dat describe geeft. Laat weg als de operatie geen invoer heeft.",
+        "De invoer volgens het invoerschema dat describe geeft. Weglaten is hetzelfde als {} wanneer dat schema een object is, dus laat haar weg als de operatie geen invoer heeft of geen veld verplicht is.",
       vervolg:
         "Het vervolg dat het vorige deel van een lang antwoord noemt, met verder precies dezelfde vraag. Laat weg voor het eerste deel.",
     },
@@ -126,6 +126,10 @@ export const copy = {
     `params.${name} staat in het pad en mag niet leeg, "." of ".." zijn.`,
   noBearer: "Niet geautoriseerd: deze koppeling vraagt een inlog.",
   badBearer: "Deze koppeling is verlopen of ongeldig. Log opnieuw in vanuit het programma.",
+  scopeAwaited: (scopes: readonly string[]) =>
+    `Deze operatie vraagt een inlog met toegang tot ${quoted(scopes)}. Log opnieuw in vanuit het programma en geef die toegang; er is niets uitgevoerd.`,
+  malformedCall:
+    "Deze aanroep van een gereedschap is niet goed gevormd: hij noemt het gereedschap en, voor read en write, de operatie elk als tekst. Er is niets uitgevoerd.",
   keysUnreachable: "De inlog kan nu niet worden gecontroleerd. Probeer het later opnieuw.",
   personUnreachable:
     "De inlog is gecontroleerd, maar wie je bent kan nu niet worden opgezocht. Probeer het later opnieuw.",

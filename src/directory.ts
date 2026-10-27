@@ -1,5 +1,6 @@
 import type { Catalogue, Operation } from "./catalogue";
 import { copy } from "./copy";
+import type { Admission } from "./door";
 import { searchIndex, type SearchIndex } from "./find";
 
 /** How many of an area's operation names its one line carries. */
@@ -17,7 +18,12 @@ export interface Directory<Actor> {
   readonly areas: ReadonlyMap<string, Area<Actor>>;
   readonly byName: ReadonlyMap<string, Operation<Actor>>;
   readonly search: SearchIndex<Actor>;
+  /** By name, the operations the person may see but run only once their login carries this scope. */
+  readonly scopes: ReadonlyMap<string, string>;
 }
+
+/** RFC 6750 §3's `scope`: scope tokens of printable ASCII but `"` and `\`, split by one space. */
+const SCOPE = /^[\x21\x23-\x5B\x5D-\x7E]+(?: [\x21\x23-\x5B\x5D-\x7E]+)*$/;
 
 /** An operation's name without its area, where the name starts with it. */
 function leafOf(operation: Operation<never>): string {
@@ -35,25 +41,45 @@ export function toDirectory<Actor>(catalogue: Catalogue<Actor>): Directory<Actor
 
 /**
  * The part of `directory` one person may use: the operations `allows`
- * admits, by area, by name and for `find`. The search keeps the whole
- * catalogue's word counts, so a word's rarity, and with it the ranking, is
- * the same for everyone; no operation outside the part is named by it.
+ * admits, by area, by name and for `find`, with the scopes it awaits for some
+ * (a scope outside RFC 6750's grammar throws, naming the operation). The
+ * search keeps the whole catalogue's word counts, so a word's rarity, and with
+ * it the ranking, is the same for everyone; no operation outside the part is
+ * named by it.
  */
 export function admitted<Actor>(
   directory: Directory<Actor>,
-  allows: (operation: Operation<Actor>) => boolean,
+  allows: (operation: Operation<Actor>) => Admission,
 ): Directory<Actor> {
-  const kept = directory.operations.filter((operation) => allows(operation));
+  const kept: Operation<Actor>[] = [];
+  const scopes = new Map<string, string>();
+  for (const operation of directory.operations) {
+    const admission = allows(operation);
+    if (admission === false) continue;
+    kept.push(operation);
+    if (admission === true) continue;
+    if (!SCOPE.test(admission.scope)) {
+      throw new Error(
+        `allows answered the scope ${JSON.stringify(admission.scope)} for "${operation.name}", which is no OAuth scope (printable ASCII but " and \\, words split by one space)`,
+      );
+    }
+    scopes.set(operation.name, admission.scope);
+  }
   const keep = new Set(kept);
-  return assembled(kept, {
-    entries: directory.search.entries.filter(({ operation }) => keep.has(operation)),
-    carrying: directory.search.carrying,
-  });
+  return assembled(
+    kept,
+    {
+      entries: directory.search.entries.filter(({ operation }) => keep.has(operation)),
+      carrying: directory.search.carrying,
+    },
+    scopes,
+  );
 }
 
 function assembled<Actor>(
   operations: readonly Operation<Actor>[],
   search: SearchIndex<Actor>,
+  scopes: ReadonlyMap<string, string> = new Map(),
 ): Directory<Actor> {
   const grouped = new Map<string, Operation<Actor>[]>();
   for (const operation of operations) {
@@ -70,6 +96,7 @@ function assembled<Actor>(
     areas,
     byName: new Map(operations.map((operation) => [operation.name, operation])),
     search,
+    scopes,
   };
 }
 
