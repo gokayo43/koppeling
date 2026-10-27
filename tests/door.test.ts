@@ -336,14 +336,17 @@ test("a door given the host's keys verifies with them and fetches nothing", asyn
   expect(idp.served.count).toBe(0);
 });
 
-test("a host gives the door its keys or where to fetch them, never both", () => {
-  // The likeliest wrong makes both optional, so a host passing both cannot
-  // tell which one the door uses.
-  const keys = createLocalJWKSet({ keys: [] });
-  // @ts-expect-error -- keys and jwksUrl are two answers to one question
-  const both: Identity = { issuer: ISSUER, keys, jwksUrl: JWKS_URL, authorizationServer: ISSUER };
-  void both;
-});
+// A host gives the door its keys or where to fetch them, never both: the
+// likeliest wrong makes both optional, so a host passing both cannot tell
+// which one the door uses. The type carries the check, so `tsc` grades it.
+// @ts-expect-error -- keys and jwksUrl are two answers to one question
+const bothKeysAndUrl: Identity = {
+  issuer: ISSUER,
+  keys: createLocalJWKSet({ keys: [] }),
+  jwksUrl: JWKS_URL,
+  authorizationServer: ISSUER,
+};
+void bothKeysAndUrl;
 
 test("a method other than POST answers 405 without asking for a token", async () => {
   const { door } = warehouseDoor();
