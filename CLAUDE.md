@@ -26,7 +26,8 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
   JSON Schema, to JSON Schema.
 - `src/directory.ts`: a catalogue as the tools read it, built once per door:
   areas, names, each operation's name without its area, the search index and
-  the instructions outline.
+  the instructions outline; and one person's part of it, with the scopes some
+  of its operations await.
 - `src/find.ts`: the search index and the ranking behind `find`.
 - `src/closed.ts`: closed inputs: the input schema with every object that
   names its keys closed, and the keys a call's input carries that it does not
