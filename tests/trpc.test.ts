@@ -543,14 +543,20 @@ test("a refusal the program stated keeps its sentence whatever its status; only 
   expect(await read("bunq.gateway")).toBe("bunq antwoordt nu niet");
   expect(await read("bunq.unavailable")).toBe("Exact is in onderhoud");
   expect(await read("bunq.timeout")).toBe("bunq was te traag");
-  expect(door.events.map((event) => [event.kind, event.operation])).toEqual([
-    ["read", "bunq.gateway"],
-    ["read", "bunq.unavailable"],
-    ["read", "bunq.timeout"],
+  const outcomes = () =>
+    door.events.map((event) => [
+      event.kind,
+      event.operation,
+      "outcome" in event ? event.outcome : null,
+    ]);
+  expect(outcomes()).toEqual([
+    ["read", "bunq.gateway", "refusal"],
+    ["read", "bunq.unavailable", "refusal"],
+    ["read", "bunq.timeout", "refusal"],
   ]);
   expect(await read("bunq.internal")).toBe(copy.internalError);
-  expect(door.events.slice(3).map((event) => [event.kind, event.operation])).toEqual([
-    ["failure", "bunq.internal"],
-    ["read", "bunq.internal"],
+  expect(outcomes().slice(3)).toEqual([
+    ["failure", "bunq.internal", null],
+    ["read", "bunq.internal", "failure"],
   ]);
 });

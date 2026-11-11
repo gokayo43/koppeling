@@ -188,7 +188,7 @@ test("an omitted input is {} for an operation whose input is an object, and stay
   });
 });
 
-test("a read or write of an operation awaiting a scope is refused where it is dispatched, running nothing and logging no write", async () => {
+test("a read or write of an operation awaiting a scope is refused where it is dispatched, running nothing and logging nothing", async () => {
   // The likeliest wrong leaves the refusal to the door's HTTP pre-check alone,
   // so a call that check reads differently from the MCP server still runs.
   const ran: string[] = [];

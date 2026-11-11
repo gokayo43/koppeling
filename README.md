@@ -100,7 +100,7 @@ Elysia field.
 
 `log` receives a `KoppelingEvent`, one of:
 
-- `{ kind: "write", operation, sub, name, via, outcome }`: one per call of a
+- `{ kind: "write", operation, sub, name, via, outcome }`: one per run of a
   write operation. `sub`, `name` and `via` (the program acting for the person)
   are the token's claims. `outcome` is `value`, `refusal`, `failure` (the
   program was not reached, so nothing changed) or `unknown` (the program was
@@ -119,8 +119,9 @@ A call refused for a key its input does not name runs nothing and reports one
 read or write event, a `failure`. A call that names no operation, names one
 through the other kind's tool, or names one awaiting a scope reports neither.
 An operation that failed or could not be reached reports its `failure` event
-and then its read or write event. No event carries the call's
-input or answer.
+and then its read or write event. One that passed the time limit reports no
+`failure` event, only its read event (`failure`) or its write event
+(`unknown`). No event carries the call's input or answer.
 
 `actorFor` answers one of three:
 
