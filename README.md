@@ -105,9 +105,22 @@ Elysia field.
   are the token's claims. `outcome` is `value`, `refusal`, `failure` (the
   program was not reached, so nothing changed) or `unknown` (the program was
   reached and its answer was lost or late, so the change may have been made).
+- `{ kind: "read", operation, sub, name, via, outcome }`: one per run of a read
+  operation, its fields a write event's. `outcome` is `value`, `refusal` or
+  `failure` (the program was not reached, failed, or passed the time limit); a
+  read changes nothing, so it has no `unknown`. A next page the door answers
+  from the answer it kept runs nothing and reports nothing; one it runs the
+  read again for reports one event.
 - `{ kind: "failure", operation, cause }`: a failure the person was answered
   with the door's own sentence for; `operation` is null when the sign-in step
   failed (the key set could not be fetched, or `actorFor` or `allows` threw).
+
+A call refused for a key its input does not name runs nothing and reports one
+read or write event, a `failure`. A call that names no operation, names one
+through the other kind's tool, or names one awaiting a scope reports neither.
+A program that failed or could not be reached reports its `failure` event and
+then its read or write event. No event carries the call's
+input or answer.
 
 `actorFor` answers one of three:
 
@@ -117,7 +130,7 @@ Elysia field.
   it, `describe` answers it with `scope`) but may run it only once their login
   carries `scope`, one OAuth scope or several split by one space. A `read` or
   `write` of such an operation is answered at the HTTP level, before anything
-  runs and with no write event: 403 with `WWW-Authenticate: Bearer
+  runs and with no read or write event: 403 with `WWW-Authenticate: Bearer
   resource_metadata="<metadata url>", error="insufficient_scope",
   scope="<scope>"` (RFC 6750 §3.1), on which an MCP client signs in again
   asking for it; a batch carrying one such call is refused whole. Any other
@@ -136,7 +149,7 @@ The types: `Catalogue<Actor>`, `Operation<Actor>`, `Kind` (`"read" | "write"`),
 `Outcome`, `Note` (`{ name, reason }`), `KoppelingMeta`, `ActorDecision<Actor>`,
 `Admission`, `Identity`,
 `KoppelingOptions<Actor>`, `Koppeling`, `BootReport`, `KoppelingEvent`,
-`WriteOutcome`, `GlossaryOptions`, `ElysiaOptions<Actor>`,
+`ReadOutcome`, `WriteOutcome`, `GlossaryOptions`, `ElysiaOptions<Actor>`,
 `TrpcOptions<Router, Actor>`, `Json`, `JsonObject`, `JsonSchema`.
 An `Operation` carries, beside its name, area, kind, description, hints,
 schemas and `run`, its `omittedInput`: what it runs with when a call leaves

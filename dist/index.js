@@ -18879,27 +18879,38 @@ function neighbours(directory, name) {
 /** The host's logger, or Effect's own when the host names none. */
 function reporter(log) {
 	if (log !== void 0) return (event) => sync(() => log(event));
-	return (event) => event.kind === "write" ? logInfo("koppeling write").pipe(annotateLogs({
+	return (event) => event.kind === "failure" ? logError(event.operation === null ? "koppeling sign-in failed" : `koppeling ${event.operation} failed`, die(event.cause)) : logInfo(`koppeling ${event.kind}`).pipe(annotateLogs({
 		operation: event.operation,
 		sub: event.sub,
 		name: event.name,
 		via: event.via,
 		outcome: event.outcome
-	})) : logError(event.operation === null ? "koppeling sign-in failed" : `koppeling ${event.operation} failed`, die(event.cause));
+	}));
 }
-/** The write event for `operation`, its person read from the token's claims. */
-function writeEvent(operation, claims, outcome) {
+/**
+* The event of one run of `operation`, of the tool's kind, its person read from
+* the token's claims. A read changes nothing, so a read whose answer was lost
+* or late came to a failure.
+*/
+function runEvent(kind, operation, claims, outcome) {
 	const text = (key) => {
 		const value = claims[key];
 		return typeof value === "string" ? value : null;
 	};
-	return {
-		kind: "write",
+	const person = {
 		operation,
 		sub: text("sub"),
 		name: text("name"),
-		via: text("via"),
+		via: text("via")
+	};
+	return kind === "write" ? {
+		kind,
+		...person,
 		outcome
+	} : {
+		kind,
+		...person,
+		outcome: outcome === "unknown" ? "failure" : outcome
 	};
 }
 //#endregion
@@ -19082,7 +19093,8 @@ var TimedOut = class extends TaggedError("TimedOut") {};
 * operation's `omittedInput`. A failure is reported and
 * answered with the door's own sentence, so a database's words never reach
 * the person; for a write that reached the program, that sentence says the
-* change may have been made. Every write leaves one write event.
+* change may have been made. Every run leaves one event of its kind: a
+* read event or a write event.
 *
 * A read's answer longer than a page comes in pages, `vervolg` naming the
 * next (`paged`); a write's comes whole, since a write is never run again.
@@ -19102,14 +19114,14 @@ function call(session, tool, name, given, vervolg) {
 			unknown,
 			allowed
 		})));
-		return write ? session.report(writeEvent(name, session.claims, "failure")).pipe(as(refused)) : succeed$1(refused);
+		return session.report(runEvent(tool, name, session.claims, "failure")).pipe(as(refused));
 	}
 	const failed = (cause, reached) => session.report({
 		kind: "failure",
 		operation: name,
 		cause
 	}).pipe(as(settled(reached ? "unknown" : "failure", refusal(write && reached ? copy$2.writeUncertain : copy$2.internalError))));
-	const settle = tryPromise({
+	const reported = tryPromise({
 		try: (signal) => operation.run(session.actor, input, signal),
 		catch: (cause) => new NotReached({ cause })
 	}).pipe(timeoutFail({
@@ -19135,9 +19147,9 @@ function call(session, tool, name, given, vervolg) {
 	}), catchTags({
 		NotReached: ({ cause }) => failed(cause, false),
 		TimedOut: () => succeed$1(settled("unknown", refusal(write ? copy$2.writeTimedOut : copy$2.readTimedOut)))
-	}));
-	if (write) return settle.pipe(tap(({ outcome }) => session.report(writeEvent(name, session.claims, outcome))), map$1(({ produced }) => "final" in produced ? produced.final : produced.fitting));
-	return paged(session.pages, pageKey(String(session.claims.sub), "read", name, input), vervolg, settle.pipe(map$1(({ produced }) => produced)));
+	})).pipe(tap(({ outcome }) => session.report(runEvent(tool, name, session.claims, outcome))), map$1(({ produced }) => produced));
+	if (write) return reported.pipe(map$1((produced) => "final" in produced ? produced.final : produced.fitting));
+	return paged(session.pages, pageKey(String(session.claims.sub), "read", name, input), vervolg, reported);
 }
 //#endregion
 //#region src/tools.ts

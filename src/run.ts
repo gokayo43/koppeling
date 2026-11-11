@@ -7,7 +7,7 @@ import { strayKeys } from "./closed";
 import { copy } from "./copy";
 import { neighbours, type Directory } from "./directory";
 import type { WriteOutcome } from "./door";
-import { writeEvent, type Report } from "./events";
+import { runEvent, type Report } from "./events";
 import type { Json } from "./json";
 import { pageKey, paged, type Pages, type Produced } from "./pages";
 
@@ -61,7 +61,8 @@ class TimedOut extends Data.TaggedError("TimedOut") {}
  * operation's `omittedInput`. A failure is reported and
  * answered with the door's own sentence, so a database's words never reach
  * the person; for a write that reached the program, that sentence says the
- * change may have been made. Every write leaves one write event.
+ * change may have been made. Every run leaves one event of its kind: a
+ * read event or a write event.
  *
  * A read's answer longer than a page comes in pages, `vervolg` naming the
  * next (`paged`); a write's comes whole, since a write is never run again.
@@ -86,9 +87,7 @@ export function call<Actor>(
       copy.strayKeys(strays),
       strays.map(({ at, unknown, allowed }) => ({ at, unknown, allowed })),
     );
-    return write
-      ? session.report(writeEvent(name, session.claims, "failure")).pipe(Effect.as(refused))
-      : Effect.succeed(refused);
+    return session.report(runEvent(tool, name, session.claims, "failure")).pipe(Effect.as(refused));
   }
   const failed = (cause: unknown, reached: boolean) =>
     session
@@ -126,16 +125,19 @@ export function call<Actor>(
         Effect.succeed(settled("unknown", refusal(write ? copy.writeTimedOut : copy.readTimedOut))),
     }),
   );
+  const reported = settle.pipe(
+    Effect.tap(({ outcome }) => session.report(runEvent(tool, name, session.claims, outcome))),
+    Effect.map(({ produced }) => produced),
+  );
   if (write) {
-    return settle.pipe(
-      Effect.tap(({ outcome }) => session.report(writeEvent(name, session.claims, outcome))),
-      Effect.map(({ produced }) => ("final" in produced ? produced.final : produced.fitting)),
+    return reported.pipe(
+      Effect.map((produced) => ("final" in produced ? produced.final : produced.fitting)),
     );
   }
   return paged(
     session.pages,
     pageKey(String(session.claims.sub), "read", name, input),
     vervolg,
-    settle.pipe(Effect.map(({ produced }) => produced)),
+    reported,
   );
 }

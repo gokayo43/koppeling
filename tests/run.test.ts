@@ -61,13 +61,6 @@ test("every write leaves one event naming the operation, the person, the program
   });
 });
 
-test("a read leaves no write event", async () => {
-  const { session, events } = sessionOf(warehouseDirectory(), warehouseAdmin, claims);
-  await Effect.runPromise(call(session, "read", "inventory.bySku", { sku: "S" }));
-
-  expect(events).toEqual([]);
-});
-
 test("without a host logger the write event goes to Effect's logger, annotated", async () => {
   const lines: { readonly message: string; readonly annotations: ReadonlyMap<string, unknown> }[] =
     [];
@@ -106,6 +99,49 @@ test("without a host logger the write event goes to Effect's logger, annotated",
   ]);
 });
 
+test("without a host logger a read event goes to Effect's logger at INFO, annotated as a write is", async () => {
+  // The likeliest wrong sends every event that is not a write down the
+  // failure branch, logging a read as an ERROR with no person.
+  const lines: {
+    readonly level: string;
+    readonly message: string;
+    readonly annotations: object;
+  }[] = [];
+  const captured = Logger.make(({ logLevel, message, annotations }) => {
+    lines.push({
+      level: logLevel.label,
+      message: JSON.stringify(message),
+      annotations: Object.fromEntries(HashMap.toEntries(annotations)),
+    });
+  });
+  const session = {
+    directory: warehouseDirectory(),
+    actor: warehouseAdmin,
+    claims,
+    report: reporter(undefined),
+    pages: new Pages(),
+  };
+  await Effect.runPromise(
+    call(session, "read", "inventory.bySku", { sku: "S" }).pipe(
+      Effect.provide(Logger.replace(Logger.defaultLogger, captured)),
+    ),
+  );
+
+  expect(lines).toEqual([
+    {
+      level: "INFO",
+      message: JSON.stringify(["koppeling read"]),
+      annotations: {
+        operation: "inventory.bySku",
+        sub: "person-7",
+        name: "Beheerder Een",
+        via: "Claude",
+        outcome: "value",
+      },
+    },
+  ]);
+});
+
 /** An app whose route answers a stream that never ends, and records that it was reached. */
 function neverEnding(reached: string[]) {
   const stream = () => {
@@ -136,7 +172,17 @@ test("an operation that does not finish within the time limit is given up on, an
 
   expect(answers.map((answered) => answered.text)).toEqual([copy.readTimedOut, copy.writeTimedOut]);
   expect(reached).toEqual(["reached", "reached"]);
-  expect(events).toEqual([
+  expect(events.filter((event) => event.kind === "read")).toEqual([
+    {
+      kind: "read",
+      operation: "events.get",
+      sub: "person-7",
+      name: "Beheerder Een",
+      via: "Claude",
+      outcome: "failure",
+    },
+  ]);
+  expect(events.filter((event) => event.kind !== "read")).toEqual([
     {
       kind: "write",
       operation: "events.post",

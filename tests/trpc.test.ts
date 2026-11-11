@@ -543,9 +543,14 @@ test("a refusal the program stated keeps its sentence whatever its status; only 
   expect(await read("bunq.gateway")).toBe("bunq antwoordt nu niet");
   expect(await read("bunq.unavailable")).toBe("Exact is in onderhoud");
   expect(await read("bunq.timeout")).toBe("bunq was te traag");
-  expect(door.events).toEqual([]);
-  expect(await read("bunq.internal")).toBe(copy.internalError);
   expect(door.events.map((event) => [event.kind, event.operation])).toEqual([
+    ["read", "bunq.gateway"],
+    ["read", "bunq.unavailable"],
+    ["read", "bunq.timeout"],
+  ]);
+  expect(await read("bunq.internal")).toBe(copy.internalError);
+  expect(door.events.slice(3).map((event) => [event.kind, event.operation])).toEqual([
     ["failure", "bunq.internal"],
+    ["read", "bunq.internal"],
   ]);
 });

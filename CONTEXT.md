@@ -9,6 +9,8 @@ Claude or another agent, reads and acts in one of the company's systems (the
 portal, the API or the warehouse) for a signed-in office person. The program
 acts as that person: what it changes is theirs, and its history says it was
 done through the program ("via Claude"). Only office staff can use a koppeling.
+The program hears of every operation its koppeling runs, a look-up as much as a
+change: which operation, for whom, through which program, and how it ended.
 
 **Koppelingsinlog**: the one-time sign-in and consent a person gives a program
 in the browser, with their portal account. A second connection of the same

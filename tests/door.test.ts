@@ -1,6 +1,5 @@
 import { expect, setSystemTime, test } from "bun:test";
 
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createLocalJWKSet } from "jose";
 
 import { copy } from "../src/copy";
@@ -15,6 +14,7 @@ import {
 } from "../src/index";
 import { warehouseAdmin } from "./fixtures/doors";
 import { contextFor, glossary, warehouseRouter, type WarehouseActor } from "./fixtures/warehouse";
+import { clientOf } from "./support/client";
 import { identityProvider, ISSUER, JWKS_URL, RESOURCE } from "./support/identity";
 
 /** A door over the warehouse fixture that counts what it asked `actorFor` and what it ran. */
@@ -66,23 +66,6 @@ const mcpPost = (token: string | undefined) =>
       clientInfo: { name: "probe", version: "1" },
     },
   });
-
-async function clientOf(
-  handle: (request: Request) => Promise<Response>,
-  token: string,
-  era: "legacy" | "modern",
-) {
-  const transport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
-    fetch: (url, init) => handle(new Request(String(url), init)),
-    requestInit: { headers: { authorization: `Bearer ${token}` } },
-  });
-  const client = new Client(
-    { name: "door-test", version: "1" },
-    era === "modern" ? { versionNegotiation: { mode: { pin: "2026-07-28" } } } : {},
-  );
-  await client.connect(transport);
-  return client;
-}
 
 for (const era of ["legacy", "modern"] as const) {
   test(`a valid token reaches call, over the ${era} protocol`, async () => {
@@ -229,7 +212,7 @@ test("a token without exp, or without sub, is refused before actorFor is asked",
   expect(asked).toEqual([]);
 });
 
-test("the host's logger receives each write, with its person and program, and each failure", async () => {
+test("the host's logger receives each write, with its person and program, each failure and each read", async () => {
   using idp = await identityProvider();
   const events: KoppelingEvent[] = [];
   const door = koppeling({
@@ -280,6 +263,7 @@ test("the host's logger receives each write, with its person and program, and ea
       via: "Claude",
       outcome: "unknown",
     },
+    { kind: "read", operation: "inventory.bySku" },
   ]);
   await client.close();
 });
@@ -521,7 +505,9 @@ test("an operation under a scope is listed and described with it, and its read o
     `Bearer resource_metadata="${METADATA_URL}", error="insufficient_scope", scope="orders:schrijven orders:lezen"`,
   );
   expect(invoked).toEqual(["inventory.bySku"]);
-  expect(events).toEqual([]);
+  expect(events.map((event) => [event.kind, event.operation])).toEqual([
+    ["read", "inventory.bySku"],
+  ]);
 });
 
 test("a scope outside RFC 6750's characters answers 503 and reports which operation allows gave it to", async () => {

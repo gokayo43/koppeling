@@ -59,12 +59,29 @@ export type Identity = {
 export type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
 
 /**
- * What the door tells the host's logger. `write`: one per call of a write
- * operation, naming the person and the program acting for them. `failure`: a
- * failure the person was answered with the door's own sentence for; its
- * `operation` is null when the sign-in failed (the key set, `actorFor` or `allows`).
+ * What a read came to: the program's value, its refusal, or a failure (the
+ * program was not reached, failed, or passed the time limit). A read changes
+ * nothing, so it has no `unknown`.
+ */
+export type ReadOutcome = "value" | "refusal" | "failure";
+
+/**
+ * What the door tells the host's logger. `read` and `write`: one per run of an
+ * operation of that kind, naming the person and the program acting for them; a
+ * next page answered from the answer the door kept runs nothing and reports
+ * nothing. `failure`: a failure the person was answered with the door's own
+ * sentence for; its `operation` is null when the sign-in failed (the key set,
+ * `actorFor` or `allows`).
  */
 export type KoppelingEvent =
+  | {
+      readonly kind: "read";
+      readonly operation: string;
+      readonly sub: string | null;
+      readonly name: string | null;
+      readonly via: string | null;
+      readonly outcome: ReadOutcome;
+    }
   | {
       readonly kind: "write";
       readonly operation: string;
@@ -113,7 +130,7 @@ export interface KoppelingOptions<Actor> {
   };
   readonly identity: Identity;
   readonly actorFor: (claims: JWTPayload) => ActorDecision<Actor> | Promise<ActorDecision<Actor>>;
-  /** The host's logger for every write and every failure; Effect's own logger when absent. */
+  /** The host's logger for every read, every write and every failure; Effect's own logger when absent. */
   readonly log?: (event: KoppelingEvent) => void;
 }
 
