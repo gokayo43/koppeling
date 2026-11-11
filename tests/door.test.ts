@@ -1,6 +1,5 @@
 import { expect, setSystemTime, test } from "bun:test";
 
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { createLocalJWKSet } from "jose";
 
 import { copy } from "../src/copy";
@@ -15,47 +14,11 @@ import {
 } from "../src/index";
 import { warehouseAdmin } from "./fixtures/doors";
 import { contextFor, glossary, warehouseRouter, type WarehouseActor } from "./fixtures/warehouse";
+import { clientOf } from "./support/client";
+import { jsonRpcPost, warehouseDoor } from "./support/door";
 import { identityProvider, ISSUER, JWKS_URL, RESOURCE } from "./support/identity";
 
-/** A door over the warehouse fixture that counts what it asked `actorFor` and what it ran. */
-function warehouseDoor(
-  decide: () => ActorDecision<WarehouseActor> = () => ({ actor: warehouseAdmin }),
-) {
-  const asked: unknown[] = [];
-  const invoked: string[] = [];
-  const events: KoppelingEvent[] = [];
-  const door = koppeling({
-    catalogue: fromTrpcRouter(
-      warehouseRouter((path) => invoked.push(path)),
-      { contextFor },
-    ),
-    glossary,
-    resource: { url: RESOURCE, scopes: ["koppeling"] },
-    identity: { issuer: ISSUER, jwksUrl: JWKS_URL, authorizationServer: ISSUER },
-    actorFor: (claims) => {
-      asked.push(claims);
-      return decide();
-    },
-    log: (event) => events.push(event),
-  });
-  return { door, asked, invoked, events };
-}
-
 const METADATA_URL = "https://wms.example/.well-known/oauth-protected-resource/api/mcp";
-
-const jsonRpcPost = (
-  token: string | undefined,
-  message: { readonly method: string; readonly params?: Json },
-) =>
-  new Request(RESOURCE, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...message }),
-  });
 
 const mcpPost = (token: string | undefined) =>
   jsonRpcPost(token, {
@@ -66,23 +29,6 @@ const mcpPost = (token: string | undefined) =>
       clientInfo: { name: "probe", version: "1" },
     },
   });
-
-async function clientOf(
-  handle: (request: Request) => Promise<Response>,
-  token: string,
-  era: "legacy" | "modern",
-) {
-  const transport = new StreamableHTTPClientTransport(new URL(RESOURCE), {
-    fetch: (url, init) => handle(new Request(String(url), init)),
-    requestInit: { headers: { authorization: `Bearer ${token}` } },
-  });
-  const client = new Client(
-    { name: "door-test", version: "1" },
-    era === "modern" ? { versionNegotiation: { mode: { pin: "2026-07-28" } } } : {},
-  );
-  await client.connect(transport);
-  return client;
-}
 
 for (const era of ["legacy", "modern"] as const) {
   test(`a valid token reaches call, over the ${era} protocol`, async () => {
@@ -252,10 +198,6 @@ test("the host's logger receives each write, with its person and program, and ea
   await client.callTool({
     name: "write",
     arguments: { name: "orders.ship", input: { orderId: 9999 } },
-  });
-  await client.callTool({
-    name: "read",
-    arguments: { name: "inventory.bySku", input: { sku: "S" } },
   });
 
   expect(
@@ -521,7 +463,9 @@ test("an operation under a scope is listed and described with it, and its read o
     `Bearer resource_metadata="${METADATA_URL}", error="insufficient_scope", scope="orders:schrijven orders:lezen"`,
   );
   expect(invoked).toEqual(["inventory.bySku"]);
-  expect(events).toEqual([]);
+  expect(events.map((event) => [event.kind, event.operation])).toEqual([
+    ["read", "inventory.bySku"],
+  ]);
 });
 
 test("a scope outside RFC 6750's characters answers 503 and reports which operation allows gave it to", async () => {

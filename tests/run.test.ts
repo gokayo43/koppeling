@@ -61,20 +61,19 @@ test("every write leaves one event naming the operation, the person, the program
   });
 });
 
-test("a read leaves no write event", async () => {
-  const { session, events } = sessionOf(warehouseDirectory(), warehouseAdmin, claims);
-  await Effect.runPromise(call(session, "read", "inventory.bySku", { sku: "S" }));
-
-  expect(events).toEqual([]);
-});
-
-test("without a host logger the write event goes to Effect's logger, annotated", async () => {
-  const lines: { readonly message: string; readonly annotations: ReadonlyMap<string, unknown> }[] =
-    [];
-  const captured = Logger.make(({ message, annotations }) => {
+test("without a host logger each read and write event goes to Effect's logger at INFO, annotated", async () => {
+  // The likeliest wrong sends every event that is not a write down the
+  // failure branch, logging a read as an ERROR with no person.
+  const lines: {
+    readonly level: string;
+    readonly message: string;
+    readonly annotations: object;
+  }[] = [];
+  const captured = Logger.make(({ logLevel, message, annotations }) => {
     lines.push({
+      level: logLevel.label,
       message: JSON.stringify(message),
-      annotations: new Map(HashMap.toEntries(annotations)),
+      annotations: Object.fromEntries(HashMap.toEntries(annotations)),
     });
   });
   const session = {
@@ -85,24 +84,24 @@ test("without a host logger the write event goes to Effect's logger, annotated",
     pages: new Pages(),
   };
   await Effect.runPromise(
-    call(session, "write", "printer.printShelve", { shelfCode: "A3" }).pipe(
-      Effect.provide(Logger.replace(Logger.defaultLogger, captured)),
-    ),
+    Effect.all([
+      call(session, "write", "printer.printShelve", { shelfCode: "A3" }),
+      call(session, "read", "inventory.bySku", { sku: "S" }),
+    ]).pipe(Effect.provide(Logger.replace(Logger.defaultLogger, captured))),
   );
 
-  expect(
-    lines.map(({ message, annotations }) => [message, Object.fromEntries(annotations)]),
-  ).toEqual([
-    [
-      JSON.stringify(["koppeling write"]),
-      {
-        operation: "printer.printShelve",
-        sub: "person-7",
-        name: "Beheerder Een",
-        via: "Claude",
-        outcome: "value",
-      },
-    ],
+  const person = { sub: "person-7", name: "Beheerder Een", via: "Claude", outcome: "value" };
+  expect(lines).toEqual([
+    {
+      level: "INFO",
+      message: JSON.stringify(["koppeling write"]),
+      annotations: { operation: "printer.printShelve", ...person },
+    },
+    {
+      level: "INFO",
+      message: JSON.stringify(["koppeling read"]),
+      annotations: { operation: "inventory.bySku", ...person },
+    },
   ]);
 });
 
@@ -136,7 +135,17 @@ test("an operation that does not finish within the time limit is given up on, an
 
   expect(answers.map((answered) => answered.text)).toEqual([copy.readTimedOut, copy.writeTimedOut]);
   expect(reached).toEqual(["reached", "reached"]);
-  expect(events).toEqual([
+  expect(events.filter((event) => event.kind === "read")).toEqual([
+    {
+      kind: "read",
+      operation: "events.get",
+      sub: "person-7",
+      name: "Beheerder Een",
+      via: "Claude",
+      outcome: "failure",
+    },
+  ]);
+  expect(events.filter((event) => event.kind !== "read")).toEqual([
     {
       kind: "write",
       operation: "events.post",
@@ -179,7 +188,7 @@ test("an omitted input is {} for an operation whose input is an object, and stay
   });
 });
 
-test("a read or write of an operation awaiting a scope is refused where it is dispatched, running nothing and logging no write", async () => {
+test("a read or write of an operation awaiting a scope is refused where it is dispatched, running nothing and logging nothing", async () => {
   // The likeliest wrong leaves the refusal to the door's HTTP pre-check alone,
   // so a call that check reads differently from the MCP server still runs.
   const ran: string[] = [];

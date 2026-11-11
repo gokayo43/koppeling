@@ -37,7 +37,7 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
 - `src/run.ts`: one `read` or `write`: the refusal of an operation awaiting a
   scope (the second layer behind the door's 403), the omitted input run as the
   operation's `omittedInput`, the stray-key refusal, the time limit, the
-  outcomes and the write events.
+  outcomes and the read and write events.
 - `src/pages.ts`: long answers in pages, and the door's store of them for
   their next pages; `src/answer.ts`, what one tool call answers.
 - `src/tools.ts`: the five tools, their schemas built once, and the MCP server
@@ -48,7 +48,8 @@ A1M4N3/Bedrijfs-Portaal#627). Work tracking is GitHub issues in
 - `src/auth.ts`, `src/door.ts`: the bearer check and `koppeling()`, the HTTP
   edge, in Effect: it reads a body once, under the SDK's limit, and hands it
   on parsed. `src/door.ts` also holds the public types the host's options name
-  (`Identity`, `ActorDecision`, `Admission`, `KoppelingEvent`).
+  (`Identity`, `ActorDecision`, `Admission`, `KoppelingEvent` and its two
+  outcome types).
 - `src/challenge.ts`: RFC 6750's challenge grammar: a scope's tokens, an
   `error_description`, and the `WWW-Authenticate` header.
 - `src/copy.ts`: every sentence a person may read, in Dutch.
@@ -63,7 +64,8 @@ rolled-up `dist/index.d.ts`, both committed, because a host installs this repo
 by git ref and builds nothing (STACK.md, Built exports).
 `tests/dist-freshness.test.ts` builds into a directory of its own and compares,
 which is why CI does not pass `build: true`. There is no `prepare` script:
-`bun run hooks` installs the git hooks after a clone.
+`bun install` installs the git hooks, since `lefthook` is a trusted dependency
+whose install script runs `lefthook install` unless `CI` is set.
 
 ## Gotchas
 

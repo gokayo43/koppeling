@@ -10,6 +10,7 @@ export {
   type Koppeling,
   type KoppelingEvent,
   type KoppelingOptions,
+  type ReadOutcome,
   type WriteOutcome,
 } from "./door";
 export { glossaryFrom, type GlossaryOptions } from "./glossary";
