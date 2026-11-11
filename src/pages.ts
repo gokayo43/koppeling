@@ -12,7 +12,7 @@ import { isJsonArray, type Json } from "./json";
 export const PAGE_SIZE = 40_000;
 
 /** How long the door keeps a long answer for its next pages. */
-const KEPT_MS = 10 * 60_000;
+export const KEPT_MS = 10 * 60_000;
 
 /**
  * The most characters the door keeps, over every person's long answers

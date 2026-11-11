@@ -107,7 +107,7 @@ Elysia field.
   reached and its answer was lost or late, so the change may have been made).
 - `{ kind: "read", operation, sub, name, via, outcome }`: one per run of a read
   operation, its fields a write event's. `outcome` is `value`, `refusal` or
-  `failure` (the program was not reached, failed, or passed the time limit); a
+  `failure` (the operation was not reached, failed, or passed the time limit); a
   read changes nothing, so it has no `unknown`. A next page the door answers
   from the answer it kept runs nothing and reports nothing; one it runs the
   read again for reports one event.
@@ -118,8 +118,8 @@ Elysia field.
 A call refused for a key its input does not name runs nothing and reports one
 read or write event, a `failure`. A call that names no operation, names one
 through the other kind's tool, or names one awaiting a scope reports neither.
-A program that failed or could not be reached reports its `failure` event and
-then its read or write event. No event carries the call's
+An operation that failed or could not be reached reports its `failure` event
+and then its read or write event. No event carries the call's
 input or answer.
 
 `actorFor` answers one of three:
@@ -359,8 +359,7 @@ portal's door.
 ## Developing
 
 ```sh
-bun install
-bun run hooks   # the git hooks
+bun install     # also installs the git hooks, outside CI
 bun run check   # format, lint, typecheck, knip
 bun test
 bun run build   # rewrites dist/, which is committed

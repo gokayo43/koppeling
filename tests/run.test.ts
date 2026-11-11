@@ -61,45 +61,7 @@ test("every write leaves one event naming the operation, the person, the program
   });
 });
 
-test("without a host logger the write event goes to Effect's logger, annotated", async () => {
-  const lines: { readonly message: string; readonly annotations: ReadonlyMap<string, unknown> }[] =
-    [];
-  const captured = Logger.make(({ message, annotations }) => {
-    lines.push({
-      message: JSON.stringify(message),
-      annotations: new Map(HashMap.toEntries(annotations)),
-    });
-  });
-  const session = {
-    directory: warehouseDirectory(),
-    actor: warehouseAdmin,
-    claims,
-    report: reporter(undefined),
-    pages: new Pages(),
-  };
-  await Effect.runPromise(
-    call(session, "write", "printer.printShelve", { shelfCode: "A3" }).pipe(
-      Effect.provide(Logger.replace(Logger.defaultLogger, captured)),
-    ),
-  );
-
-  expect(
-    lines.map(({ message, annotations }) => [message, Object.fromEntries(annotations)]),
-  ).toEqual([
-    [
-      JSON.stringify(["koppeling write"]),
-      {
-        operation: "printer.printShelve",
-        sub: "person-7",
-        name: "Beheerder Een",
-        via: "Claude",
-        outcome: "value",
-      },
-    ],
-  ]);
-});
-
-test("without a host logger a read event goes to Effect's logger at INFO, annotated as a write is", async () => {
+test("without a host logger each read and write event goes to Effect's logger at INFO, annotated", async () => {
   // The likeliest wrong sends every event that is not a write down the
   // failure branch, logging a read as an ERROR with no person.
   const lines: {
@@ -122,22 +84,23 @@ test("without a host logger a read event goes to Effect's logger at INFO, annota
     pages: new Pages(),
   };
   await Effect.runPromise(
-    call(session, "read", "inventory.bySku", { sku: "S" }).pipe(
-      Effect.provide(Logger.replace(Logger.defaultLogger, captured)),
-    ),
+    Effect.all([
+      call(session, "write", "printer.printShelve", { shelfCode: "A3" }),
+      call(session, "read", "inventory.bySku", { sku: "S" }),
+    ]).pipe(Effect.provide(Logger.replace(Logger.defaultLogger, captured))),
   );
 
+  const person = { sub: "person-7", name: "Beheerder Een", via: "Claude", outcome: "value" };
   expect(lines).toEqual([
     {
       level: "INFO",
+      message: JSON.stringify(["koppeling write"]),
+      annotations: { operation: "printer.printShelve", ...person },
+    },
+    {
+      level: "INFO",
       message: JSON.stringify(["koppeling read"]),
-      annotations: {
-        operation: "inventory.bySku",
-        sub: "person-7",
-        name: "Beheerder Een",
-        via: "Claude",
-        outcome: "value",
-      },
+      annotations: { operation: "inventory.bySku", ...person },
     },
   ]);
 });

@@ -18887,30 +18887,16 @@ function reporter(log) {
 		outcome: event.outcome
 	}));
 }
-/**
-* The event of one run of `operation`, of the tool's kind, its person read from
-* the token's claims. A read changes nothing, so a read whose answer was lost
-* or late came to a failure.
-*/
-function runEvent(kind, operation, claims, outcome) {
+/** The person a read or write event names, as the token's claims name them. */
+function personOf(claims) {
 	const text = (key) => {
 		const value = claims[key];
 		return typeof value === "string" ? value : null;
 	};
-	const person = {
-		operation,
+	return {
 		sub: text("sub"),
 		name: text("name"),
 		via: text("via")
-	};
-	return kind === "write" ? {
-		kind,
-		...person,
-		outcome
-	} : {
-		kind,
-		...person,
-		outcome: outcome === "unknown" ? "failure" : outcome
 	};
 }
 //#endregion
@@ -19077,6 +19063,16 @@ function unknownOperation(directory, name) {
 	const near = neighbours(directory, name);
 	return refusal(near.length > 0 ? copy$2.unknownOperation(name, near) : copy$2.unknownOperationArea(name, [...directory.areas.keys()]));
 }
+const READ = {
+	uncertain: "failure",
+	failedOnceReached: copy$2.internalError,
+	timedOut: copy$2.readTimedOut
+};
+const WRITE = {
+	uncertain: "unknown",
+	failedOnceReached: copy$2.writeUncertain,
+	timedOut: copy$2.writeTimedOut
+};
 const settled = (outcome, final) => ({
 	outcome,
 	produced: { final }
@@ -19105,8 +19101,11 @@ function call(session, tool, name, given, vervolg) {
 	const { operation, awaits } = offered;
 	if (awaits.length > 0) return succeed$1(refusal(copy$2.scopeAwaited(awaits)));
 	if (operation.kind !== tool) return succeed$1(refusal(copy$2.wrongTool(name, operation.kind)));
-	const write = operation.kind === "write";
 	const input = given === void 0 ? operation.omittedInput : given;
+	const person = {
+		operation: name,
+		...personOf(session.claims)
+	};
 	const strays = strayKeys(operation.input, input);
 	if (strays.length) {
 		const refused = refusal(copy$2.strayKeys(strays), strays.map(({ at, unknown, allowed }) => ({
@@ -19114,14 +19113,31 @@ function call(session, tool, name, given, vervolg) {
 			unknown,
 			allowed
 		})));
-		return session.report(runEvent(tool, name, session.claims, "failure")).pipe(as(refused));
+		return session.report({
+			kind: tool,
+			...person,
+			outcome: "failure"
+		}).pipe(as(refused));
 	}
+	if (tool === "write") return settle(session, operation, input, WRITE).pipe(tap(({ outcome }) => session.report({
+		kind: "write",
+		...person,
+		outcome
+	})), map$1(({ produced }) => "final" in produced ? produced.final : produced.fitting));
+	return paged(session.pages, pageKey(String(session.claims.sub), "read", name, input), vervolg, settle(session, operation, input, READ).pipe(tap(({ outcome }) => session.report({
+		kind: "read",
+		...person,
+		outcome
+	})), map$1(({ produced }) => produced)));
+}
+/** One run of `operation`, settled as `stakes` says a run of its kind settles. */
+function settle(session, operation, input, stakes) {
 	const failed = (cause, reached) => session.report({
 		kind: "failure",
-		operation: name,
+		operation: operation.name,
 		cause
-	}).pipe(as(settled(reached ? "unknown" : "failure", refusal(write && reached ? copy$2.writeUncertain : copy$2.internalError))));
-	const reported = tryPromise({
+	}).pipe(as(reached ? settled(stakes.uncertain, refusal(stakes.failedOnceReached)) : settled("failure", refusal(copy$2.internalError))));
+	return tryPromise({
 		try: (signal) => operation.run(session.actor, input, signal),
 		catch: (cause) => new NotReached({ cause })
 	}).pipe(timeoutFail({
@@ -19146,10 +19162,8 @@ function call(session, tool, name, given, vervolg) {
 		return failed(outcome.failed, true);
 	}), catchTags({
 		NotReached: ({ cause }) => failed(cause, false),
-		TimedOut: () => succeed$1(settled("unknown", refusal(write ? copy$2.writeTimedOut : copy$2.readTimedOut)))
-	})).pipe(tap(({ outcome }) => session.report(runEvent(tool, name, session.claims, outcome))), map$1(({ produced }) => produced));
-	if (write) return reported.pipe(map$1((produced) => "final" in produced ? produced.final : produced.fitting));
-	return paged(session.pages, pageKey(String(session.claims.sub), "read", name, input), vervolg, reported);
+		TimedOut: () => succeed$1(settled(stakes.uncertain, refusal(stakes.timedOut)))
+	}));
 }
 //#endregion
 //#region src/tools.ts

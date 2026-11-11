@@ -1,8 +1,7 @@
 import { Cause, Effect } from "effect";
 import type { JWTPayload } from "jose";
 
-import type { Kind } from "./catalogue";
-import type { KoppelingEvent, WriteOutcome } from "./door";
+import type { KoppelingEvent } from "./door";
 
 export type Report = (event: KoppelingEvent) => Effect.Effect<void>;
 
@@ -28,23 +27,11 @@ export function reporter(log: ((event: KoppelingEvent) => void) | undefined): Re
         );
 }
 
-/**
- * The event of one run of `operation`, of the tool's kind, its person read from
- * the token's claims. A read changes nothing, so a read whose answer was lost
- * or late came to a failure.
- */
-export function runEvent(
-  kind: Kind,
-  operation: string,
-  claims: JWTPayload,
-  outcome: WriteOutcome,
-): KoppelingEvent {
+/** The person a read or write event names, as the token's claims name them. */
+export function personOf(claims: JWTPayload) {
   const text = (key: string) => {
     const value = claims[key];
     return typeof value === "string" ? value : null;
   };
-  const person = { operation, sub: text("sub"), name: text("name"), via: text("via") };
-  return kind === "write"
-    ? { kind, ...person, outcome }
-    : { kind, ...person, outcome: outcome === "unknown" ? "failure" : outcome };
+  return { sub: text("sub"), name: text("name"), via: text("via") };
 }

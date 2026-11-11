@@ -64,7 +64,8 @@ rolled-up `dist/index.d.ts`, both committed, because a host installs this repo
 by git ref and builds nothing (STACK.md, Built exports).
 `tests/dist-freshness.test.ts` builds into a directory of its own and compares,
 which is why CI does not pass `build: true`. There is no `prepare` script:
-`bun run hooks` installs the git hooks after a clone.
+`bun install` installs the git hooks, since `lefthook` is a trusted dependency
+whose install script runs `lefthook install` unless `CI` is set.
 
 ## Gotchas
 

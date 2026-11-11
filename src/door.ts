@@ -52,44 +52,37 @@ export type Identity = {
 );
 
 /**
- * What a write came to: the program's value, its refusal, a failure before the
- * program was reached (nothing changed), or `unknown`: the program was reached
- * and its answer was lost or late, so the change may have been made.
- */
-export type WriteOutcome = "value" | "refusal" | "failure" | "unknown";
-
-/**
- * What a read came to: the program's value, its refusal, or a failure (the
- * program was not reached, failed, or passed the time limit). A read changes
- * nothing, so it has no `unknown`.
+ * What a read came to: the operation's value, its refusal, or a failure (it
+ * was not reached, failed, or passed the time limit). A read changes nothing,
+ * so it has no `unknown`.
  */
 export type ReadOutcome = "value" | "refusal" | "failure";
 
 /**
+ * What a write came to: the operation's value, its refusal, a failure before
+ * it was reached (nothing changed), or `unknown`: it was reached and its
+ * answer was lost or late, so the change may have been made.
+ */
+export type WriteOutcome = ReadOutcome | "unknown";
+
+/** The operation a read or write event names, and its person and the program acting for them. */
+interface OperationRun {
+  readonly operation: string;
+  readonly sub: string | null;
+  readonly name: string | null;
+  readonly via: string | null;
+}
+
+/**
  * What the door tells the host's logger. `read` and `write`: one per run of an
- * operation of that kind, naming the person and the program acting for them; a
- * next page answered from the answer the door kept runs nothing and reports
- * nothing. `failure`: a failure the person was answered with the door's own
- * sentence for; its `operation` is null when the sign-in failed (the key set,
- * `actorFor` or `allows`).
+ * operation of that kind; a next page answered from the answer the door kept
+ * runs nothing and reports nothing. `failure`: a failure the person was
+ * answered with the door's own sentence for; its `operation` is null when the
+ * sign-in failed (the key set, `actorFor` or `allows`).
  */
 export type KoppelingEvent =
-  | {
-      readonly kind: "read";
-      readonly operation: string;
-      readonly sub: string | null;
-      readonly name: string | null;
-      readonly via: string | null;
-      readonly outcome: ReadOutcome;
-    }
-  | {
-      readonly kind: "write";
-      readonly operation: string;
-      readonly sub: string | null;
-      readonly name: string | null;
-      readonly via: string | null;
-      readonly outcome: WriteOutcome;
-    }
+  | (OperationRun & { readonly kind: "read"; readonly outcome: ReadOutcome })
+  | (OperationRun & { readonly kind: "write"; readonly outcome: WriteOutcome })
   | { readonly kind: "failure"; readonly operation: string | null; readonly cause: unknown };
 
 /**

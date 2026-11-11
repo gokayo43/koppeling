@@ -15,47 +15,10 @@ import {
 import { warehouseAdmin } from "./fixtures/doors";
 import { contextFor, glossary, warehouseRouter, type WarehouseActor } from "./fixtures/warehouse";
 import { clientOf } from "./support/client";
+import { jsonRpcPost, warehouseDoor } from "./support/door";
 import { identityProvider, ISSUER, JWKS_URL, RESOURCE } from "./support/identity";
 
-/** A door over the warehouse fixture that counts what it asked `actorFor` and what it ran. */
-function warehouseDoor(
-  decide: () => ActorDecision<WarehouseActor> = () => ({ actor: warehouseAdmin }),
-) {
-  const asked: unknown[] = [];
-  const invoked: string[] = [];
-  const events: KoppelingEvent[] = [];
-  const door = koppeling({
-    catalogue: fromTrpcRouter(
-      warehouseRouter((path) => invoked.push(path)),
-      { contextFor },
-    ),
-    glossary,
-    resource: { url: RESOURCE, scopes: ["koppeling"] },
-    identity: { issuer: ISSUER, jwksUrl: JWKS_URL, authorizationServer: ISSUER },
-    actorFor: (claims) => {
-      asked.push(claims);
-      return decide();
-    },
-    log: (event) => events.push(event),
-  });
-  return { door, asked, invoked, events };
-}
-
 const METADATA_URL = "https://wms.example/.well-known/oauth-protected-resource/api/mcp";
-
-const jsonRpcPost = (
-  token: string | undefined,
-  message: { readonly method: string; readonly params?: Json },
-) =>
-  new Request(RESOURCE, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
-    },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...message }),
-  });
 
 const mcpPost = (token: string | undefined) =>
   jsonRpcPost(token, {
@@ -212,7 +175,7 @@ test("a token without exp, or without sub, is refused before actorFor is asked",
   expect(asked).toEqual([]);
 });
 
-test("the host's logger receives each write, with its person and program, each failure and each read", async () => {
+test("the host's logger receives each write, with its person and program, and each failure", async () => {
   using idp = await identityProvider();
   const events: KoppelingEvent[] = [];
   const door = koppeling({
@@ -235,10 +198,6 @@ test("the host's logger receives each write, with its person and program, each f
   await client.callTool({
     name: "write",
     arguments: { name: "orders.ship", input: { orderId: 9999 } },
-  });
-  await client.callTool({
-    name: "read",
-    arguments: { name: "inventory.bySku", input: { sku: "S" } },
   });
 
   expect(
@@ -263,7 +222,6 @@ test("the host's logger receives each write, with its person and program, each f
       via: "Claude",
       outcome: "unknown",
     },
-    { kind: "read", operation: "inventory.bySku" },
   ]);
   await client.close();
 });
