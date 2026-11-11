@@ -24,36 +24,36 @@
     "hooks": "lefthook install"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.3.1",
-    "jose": "6.2.12"
+    "@modelcontextprotocol/server": "2.4.0",
+    "jose": "6.2.15"
   },
   "devDependencies": {
-    "@commitlint/cli": "21.2.3",
-    "@commitlint/config-conventional": "21.2.3",
-    "@gokayo43/dev-config": "github:gokayo43/dev-config#bf443953e3c8dcd80ed5f12872f942e1d6d3d046",
-    "@modelcontextprotocol/client": "2.3.1",
+    "@commitlint/cli": "21.2.4",
+    "@commitlint/config-conventional": "21.2.4",
+    "@gokayo43/dev-config": "github:gokayo43/dev-config#5c95d7d005af11c48ad74e63188d29d36e2acd59",
+    "@modelcontextprotocol/client": "2.4.0",
     "@sinclair/typebox": "0.34.52",
-    "@trpc/server": "11.19.0",
-    "@types/bun": "1.4.3",
-    "effect": "3.22.3",
-    "effect3host": "npm:effect@3.22.1",
-    "effect4": "npm:effect@4.0.5",
+    "@trpc/server": "11.24.0",
+    "@types/bun": "1.4.4",
+    "effect": "3.22.4",
+    "effect3host": "npm:effect@3.22.4",
+    "effect4": "npm:effect@4.1.2",
     "elysia": "1.4.30",
     "eslint-import-resolver-typescript": "4.4.5",
-    "eslint-plugin-boundaries": "7.2.0",
+    "eslint-plugin-boundaries": "7.4.1",
     "fast-check": "4.10.2",
-    "knip": "6.41.0",
+    "knip": "6.44.1",
     "lefthook": "2.2.2",
-    "oxfmt": "0.73.0",
+    "oxfmt": "0.76.0",
     "oxlint": "1.88.0",
-    "oxlint-tsgolint": "7.0.2004",
-    "tsdown": "0.23.1",
+    "oxlint-tsgolint": "7.0.2005",
+    "tsdown": "0.23.5",
     "typescript": "7.0.2",
     "zod": "4.6.7"
   },
   "peerDependencies": {
-    "@trpc/server": "^11",
-    "elysia": "^1.4"
+    "@trpc/server": "11.28.0",
+    "elysia": "1.4.32"
   },
   "peerDependenciesMeta": {
     "@trpc/server": {
@@ -63,7 +63,7 @@
       "optional": true
     }
   },
-  "packageManager": "bun@1.4.0",
+  "packageManager": "bun@1.4.4",
   "lifecycle": "dev",
   "trustedDependencies": [
     "lefthook"

@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   check:
-    uses: gokayo43/dev-config/.github/workflows/check.yml@bf443953e3c8dcd80ed5f12872f942e1d6d3d046 # v0.70.1
+    uses: gokayo43/dev-config/.github/workflows/check.yml@5c95d7d005af11c48ad74e63188d29d36e2acd59 # v0.71.1
     with:
       # No `build: true`, deliberately: dist/ is committed, and the suite's
       # freshness case compares it with a build of its own. A build before the
